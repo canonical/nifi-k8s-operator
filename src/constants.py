@@ -21,9 +21,10 @@ NIFI_HTTP_HOST = "0.0.0.0"
 NIFI_PORT = 8080
 
 # Juju storage mount paths (defined in charmcraft.yaml)
+# Placed under NIFI_HOME to match upstream NiFi defaults.
 DATA_DIR = "/var/lib/nifi/data"
 CONTENT_REPO_DIR = "/var/lib/nifi/content_repository"
-PROVENANCE_REPO_DIR = "/var/lib/nifi/provenance_repo"
+PROVENANCE_REPO_DIR = "/var/lib/nifi/provenance_repository"
 
 # TODO: Make configurable via Juju secret (nifi.sensitive.props.key).
 # Must be at least 12 characters. 32 characters recommended.

@@ -42,7 +42,7 @@ containers:
       - storage: content-repo
         location: /var/lib/nifi/content_repository
       - storage: provenance-repo
-        location: /var/lib/nifi/provenance_repo
+        location: /var/lib/nifi/provenance_repository
 
 resources:
   nifi-image:

@@ -11,8 +11,8 @@ SERVICE_NAME = "nifi"
 WORKLOAD_USER = "nifi"
 WORKLOAD_GROUP = "nifi"
 
-# TODO Match it to NIFI_HOME when switching to the Canonical rock image. 
-# The upstream apache/nifi image uses /opt/nifi/nifi-current as NIFI_HOME, 
+# TODO Match it to NIFI_HOME when switching to the Canonical rock image.
+# The upstream apache/nifi image uses /opt/nifi/nifi-current as NIFI_HOME,
 # which is a symlink to the actual versioned directory (e.g. /opt/nifi/nifi-2.9.0).
 NIFI_HOME = "/opt/nifi/nifi-current"
 NIFI_PROPERTIES_PATH = f"{NIFI_HOME}/conf/nifi.properties"

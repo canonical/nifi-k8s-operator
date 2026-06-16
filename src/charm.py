@@ -37,9 +37,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         super().__init__(framework)
         self._container = self.unit.get_container(constants.CONTAINER_NAME)
 
-        self.framework.observe(
-            self.on[constants.CONTAINER_NAME].pebble_ready, self._reconcile
-        )
+        self.framework.observe(self.on[constants.CONTAINER_NAME].pebble_ready, self._reconcile)
         self.framework.observe(self.on.start, self._reconcile)
         self.framework.observe(self.on.config_changed, self._reconcile)
         self.framework.observe(self.on.update_status, self._reconcile)
@@ -154,14 +152,10 @@ class NifiK8SOperatorCharm(ops.CharmBase):
                 self._container.restart(constants.SERVICE_NAME)
         except ops.pebble.ChangeError as e:
             logger.exception("Pebble replan failed: %s", e)
-            raise ExitWithStatusError(
-                "Failed to (re)start NiFi service", ops.BlockedStatus
-            )
+            raise ExitWithStatusError("Failed to (re)start NiFi service", ops.BlockedStatus)
         except ops.pebble.APIError as e:
             logger.exception("Pebble API error during restart: %s", e)
-            raise ExitWithStatusError(
-                "Failed to (re)start NiFi service", ops.BlockedStatus
-            )
+            raise ExitWithStatusError("Failed to (re)start NiFi service", ops.BlockedStatus)
 
     def _reconcile(self, _) -> None:
         """Idempotent reconcile handler for all charm events.
@@ -172,9 +166,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         """
         try:
             if not self._container.can_connect():
-                raise ExitWithStatusError(
-                    "Waiting for Pebble to be ready", ops.WaitingStatus
-                )
+                raise ExitWithStatusError("Waiting for Pebble to be ready", ops.WaitingStatus)
 
             self._ensure_storage_dirs()
             was_running = self._service_is_running()

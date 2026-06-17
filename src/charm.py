@@ -60,7 +60,12 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             constants.CONTENT_REPO_DIR,
             constants.PROVENANCE_REPO_DIR,
         ]
-        created_any = False
+        mount_roots = [
+            constants.DATA_DIR,
+            constants.CONTENT_REPO_DIR,
+            constants.PROVENANCE_REPO_DIR,
+        ]
+        expected_owner = f"{constants.WORKLOAD_USER}:{constants.WORKLOAD_GROUP}"
         try:
             for d in dirs:
                 if not self._container.exists(d):
@@ -70,17 +75,23 @@ class NifiK8SOperatorCharm(ops.CharmBase):
                         group=constants.WORKLOAD_GROUP,
                         make_parents=True,
                     )
-                    created_any = True
 
-            if created_any:
+            # Juju storage mount points are owned by root; chown only when necessary.
+            # Check the mount roots non-recursively first to avoid an expensive
+            # recursive chown on every reconcile.
+            needs_chown = any(
+                self._container.exec(["stat", "-c", "%U:%G", root]).wait_output()[0].strip()
+                != expected_owner
+                for root in mount_roots
+                if self._container.exists(root)
+            )
+            if needs_chown:
                 self._container.exec(
                     [
                         "chown",
                         "-R",
-                        f"{constants.WORKLOAD_USER}:{constants.WORKLOAD_GROUP}",
-                        constants.DATA_DIR,
-                        constants.CONTENT_REPO_DIR,
-                        constants.PROVENANCE_REPO_DIR,
+                        expected_owner,
+                        *mount_roots,
                     ]
                 ).wait()
         except ops.pebble.APIError as e:

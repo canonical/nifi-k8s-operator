@@ -12,14 +12,12 @@ import constants
 _TEMPLATES_DIR = pathlib.Path(__file__).parent / "templates"
 
 
-class NifiConfigRenderer:
+class NifiPropertyRenderer:
     """Renders NiFi configuration files from Jinja2 templates."""
 
     def __init__(self, templates_dir: pathlib.Path = _TEMPLATES_DIR):
         # autoescape disabled — generating properties/XML files, not HTML
-        self._env = Environment(
-            loader=FileSystemLoader(str(templates_dir)), autoescape=False
-        )
+        self._env = Environment(loader=FileSystemLoader(str(templates_dir)), autoescape=False)
 
     def render_nifi_properties(self) -> str:
         """Render nifi.properties from the Jinja2 template."""
@@ -30,6 +28,7 @@ class NifiConfigRenderer:
             "http_host": constants.NIFI_HTTP_HOST,
             "http_port": constants.NIFI_PORT,
             "sensitive_props_key": constants.SENSITIVE_PROPS_KEY,
+            "state_management_xml_path": constants.STATE_MANAGEMENT_XML_PATH,
         }
         return self._env.get_template("nifi.properties.j2").render(**context)
 

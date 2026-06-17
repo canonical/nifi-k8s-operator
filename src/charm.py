@@ -10,7 +10,7 @@ import logging
 import ops
 
 import constants
-from config import NifiConfigRenderer
+from properties_generator import NifiPropertyRenderer
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +35,11 @@ class NifiK8SOperatorCharm(ops.CharmBase):
     def __init__(self, framework: ops.Framework):
         super().__init__(framework)
         self._container = self.unit.get_container(constants.CONTAINER_NAME)
-        self._renderer = NifiConfigRenderer()
+        self._renderer = NifiPropertyRenderer()
 
         for event in [
             self.on[constants.CONTAINER_NAME].pebble_ready,
-            self.on.start,
+            # self.on.start,
             self.on.config_changed,
             self.on.update_status,
         ]:
@@ -48,10 +48,9 @@ class NifiK8SOperatorCharm(ops.CharmBase):
     def _check_pebble_connection(self) -> None:
         """Verify connection to the container; otherwise raise."""
         if not self._container.can_connect():
-            raise ExitWithStatusError(
-                constants.MSG_PEBBLE_NOT_READY, ops.MaintenanceStatus
-            )
+            raise ExitWithStatusError(constants.MSG_PEBBLE_NOT_READY, ops.MaintenanceStatus)
 
+    # TODO: Refactor to potentially remove this method once nifi rock is available.
     def _ensure_storage_dirs(self) -> None:
         """Create NiFi storage directories if they don't already exist."""
         dirs = [
@@ -74,8 +73,6 @@ class NifiK8SOperatorCharm(ops.CharmBase):
                     created_any = True
 
             if created_any:
-                # Juju storage mount points are owned by root; NiFi needs write access.
-                # Only run on first boot when directories are actually created.
                 self._container.exec(
                     [
                         "chown",
@@ -117,24 +114,18 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             raise ExitWithStatusError(constants.MSG_CONFIG_WRITE_FAILED, ops.BlockedStatus)
         return True
 
-    def _write_state_management_xml(self) -> bool:
-        """Write state-management.xml to the workload container.
+    def _write_state_management_xml(self) -> None:
+        """Write state-management.xml to the workload container if not already present.
 
-        Returns True if the file was created or updated, False if unchanged.
+        The contents are static; no diffing is needed.
         """
-        rendered = self._renderer.render_state_management_xml()
-        rendered_hash = hashlib.sha256(rendered.encode()).hexdigest()
+        if self._container.exists(constants.STATE_MANAGEMENT_XML_PATH):
+            return
 
         try:
-            if self._container.exists(constants.STATE_MANAGEMENT_XML_PATH):
-                on_disk = self._container.pull(constants.STATE_MANAGEMENT_XML_PATH).read()
-                on_disk_hash = hashlib.sha256(on_disk.encode()).hexdigest()
-                if rendered_hash == on_disk_hash:
-                    return False
-
             self._container.push(
                 constants.STATE_MANAGEMENT_XML_PATH,
-                rendered,
+                self._renderer.render_state_management_xml(),
                 user=constants.WORKLOAD_USER,
                 group=constants.WORKLOAD_GROUP,
                 make_dirs=True,
@@ -142,7 +133,6 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         except ops.pebble.APIError as e:
             logger.exception("Failed to write state-management.xml: %s", e)
             raise ExitWithStatusError(constants.MSG_CONFIG_WRITE_FAILED, ops.BlockedStatus)
-        return True
 
     def _service_is_running(self) -> bool:
         """Check if the NiFi pebble service is currently running."""
@@ -210,9 +200,8 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             self._check_pebble_connection()
             self._ensure_storage_dirs()
             was_running = self._service_is_running()
-            props_changed = self._write_nifi_properties()
-            sm_changed = self._write_state_management_xml()
-            config_changed = props_changed or sm_changed
+            config_changed = self._write_nifi_properties()
+            self._write_state_management_xml()
 
             # On first boot, replan starts the service (startup: enabled).
             # On subsequent reconciles with config changes, restart is required
@@ -235,4 +224,3 @@ class NifiK8SOperatorCharm(ops.CharmBase):
 
 if __name__ == "__main__":
     ops.main(NifiK8SOperatorCharm)
-

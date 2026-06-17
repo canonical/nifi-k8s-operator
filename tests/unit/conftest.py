@@ -96,3 +96,22 @@ def running_container(container):
         execs=container.execs,
         check_infos=container.check_infos,
     )
+
+
+@pytest.fixture()
+def booting_container(container):
+    """Container where the NiFi readiness check is DOWN (workload still starting)."""
+    return ops.testing.Container(
+        name=container.name,
+        can_connect=container.can_connect,
+        layers=container.layers,
+        execs=container.execs,
+        check_infos={
+            ops.testing.CheckInfo(
+                "nifi-ready",
+                level=ops.pebble.CheckLevel.READY,
+                status=ops.pebble.CheckStatus.DOWN,
+                failures=1,
+            ),
+        },
+    )

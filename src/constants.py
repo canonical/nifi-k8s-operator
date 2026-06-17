@@ -16,6 +16,7 @@ WORKLOAD_GROUP = "nifi"
 # which is a symlink to the actual versioned directory (e.g. /opt/nifi/nifi-2.9.0).
 NIFI_HOME = "/opt/nifi/nifi-current"
 NIFI_PROPERTIES_PATH = f"{NIFI_HOME}/conf/nifi.properties"
+STATE_MANAGEMENT_XML_PATH = f"{NIFI_HOME}/conf/state-management.xml"
 
 NIFI_HTTP_HOST = "0.0.0.0"
 NIFI_PORT = 8080
@@ -33,3 +34,9 @@ SENSITIVE_PROPS_KEY = "placeholder-sensitive-props-key-change-me"
 # TODO: Set JAVA_HOME when switching to the Canonical rock image.
 # The upstream apache/nifi image already provides JAVA_HOME via the base Eclipse Temurin image.
 # The rock will use: /usr/lib/jvm/java-21-openjdk-amd64
+
+# Unit status messages
+MSG_PEBBLE_NOT_READY = "Cannot connect to workload container"
+MSG_NIFI_STARTING = "NiFi is starting"
+MSG_SERVICE_START_FAILED = "Failed to (re)start NiFi service"
+MSG_CONFIG_WRITE_FAILED = "Failed to write NiFi configuration"

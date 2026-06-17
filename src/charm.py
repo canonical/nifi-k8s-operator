@@ -6,12 +6,11 @@
 
 import hashlib
 import logging
-import pathlib
 
 import ops
-from jinja2 import Environment, FileSystemLoader
 
 import constants
+from config import NifiConfigRenderer
 
 logger = logging.getLogger(__name__)
 
@@ -36,26 +35,22 @@ class NifiK8SOperatorCharm(ops.CharmBase):
     def __init__(self, framework: ops.Framework):
         super().__init__(framework)
         self._container = self.unit.get_container(constants.CONTAINER_NAME)
+        self._renderer = NifiConfigRenderer()
 
-        self.framework.observe(self.on[constants.CONTAINER_NAME].pebble_ready, self._reconcile)
-        self.framework.observe(self.on.start, self._reconcile)
-        self.framework.observe(self.on.config_changed, self._reconcile)
-        self.framework.observe(self.on.update_status, self._reconcile)
+        for event in [
+            self.on[constants.CONTAINER_NAME].pebble_ready,
+            self.on.start,
+            self.on.config_changed,
+            self.on.update_status,
+        ]:
+            self.framework.observe(event, self._reconcile)
 
-    def _render_nifi_properties(self) -> str:
-        """Render nifi.properties from the Jinja2 template."""
-        templates_dir = pathlib.Path(__file__).parent / "templates"
-        # autoescape disabled — generating a properties file, not HTML
-        env = Environment(loader=FileSystemLoader(str(templates_dir)), autoescape=False)
-        template = env.get_template("nifi.properties.j2")
-        return template.render(
-            data_dir=constants.DATA_DIR,
-            content_repo_dir=constants.CONTENT_REPO_DIR,
-            provenance_repo_dir=constants.PROVENANCE_REPO_DIR,
-            http_host=constants.NIFI_HTTP_HOST,
-            http_port=constants.NIFI_PORT,
-            sensitive_props_key=constants.SENSITIVE_PROPS_KEY,
-        )
+    def _check_pebble_connection(self) -> None:
+        """Verify connection to the container; otherwise raise."""
+        if not self._container.can_connect():
+            raise ExitWithStatusError(
+                constants.MSG_PEBBLE_NOT_READY, ops.MaintenanceStatus
+            )
 
     def _ensure_storage_dirs(self) -> None:
         """Create NiFi storage directories if they don't already exist."""
@@ -66,48 +61,87 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             constants.CONTENT_REPO_DIR,
             constants.PROVENANCE_REPO_DIR,
         ]
-        for d in dirs:
-            if not self._container.exists(d):
-                self._container.make_dir(
-                    d,
-                    user=constants.WORKLOAD_USER,
-                    group=constants.WORKLOAD_GROUP,
-                    make_parents=True,
-                )
+        created_any = False
+        try:
+            for d in dirs:
+                if not self._container.exists(d):
+                    self._container.make_dir(
+                        d,
+                        user=constants.WORKLOAD_USER,
+                        group=constants.WORKLOAD_GROUP,
+                        make_parents=True,
+                    )
+                    created_any = True
 
-        # Juju storage mount points are owned by root; NiFi needs write access.
-        self._container.exec(
-            [
-                "chown",
-                "-R",
-                f"{constants.WORKLOAD_USER}:{constants.WORKLOAD_GROUP}",
-                constants.DATA_DIR,
-                constants.CONTENT_REPO_DIR,
-                constants.PROVENANCE_REPO_DIR,
-            ]
-        ).wait()
+            if created_any:
+                # Juju storage mount points are owned by root; NiFi needs write access.
+                # Only run on first boot when directories are actually created.
+                self._container.exec(
+                    [
+                        "chown",
+                        "-R",
+                        f"{constants.WORKLOAD_USER}:{constants.WORKLOAD_GROUP}",
+                        constants.DATA_DIR,
+                        constants.CONTENT_REPO_DIR,
+                        constants.PROVENANCE_REPO_DIR,
+                    ]
+                ).wait()
+        except ops.pebble.APIError as e:
+            logger.exception("Failed to create storage directories: %s", e)
+            raise ExitWithStatusError(constants.MSG_CONFIG_WRITE_FAILED, ops.BlockedStatus)
 
     def _write_nifi_properties(self) -> bool:
         """Write nifi.properties to the workload container.
 
         Returns True if the file was created or updated, False if unchanged.
         """
-        rendered = self._render_nifi_properties()
+        rendered = self._renderer.render_nifi_properties()
         rendered_hash = hashlib.sha256(rendered.encode()).hexdigest()
 
-        if self._container.exists(constants.NIFI_PROPERTIES_PATH):
-            on_disk = self._container.pull(constants.NIFI_PROPERTIES_PATH).read()
-            on_disk_hash = hashlib.sha256(on_disk.encode()).hexdigest()
-            if rendered_hash == on_disk_hash:
-                return False
+        try:
+            if self._container.exists(constants.NIFI_PROPERTIES_PATH):
+                on_disk = self._container.pull(constants.NIFI_PROPERTIES_PATH).read()
+                on_disk_hash = hashlib.sha256(on_disk.encode()).hexdigest()
+                if rendered_hash == on_disk_hash:
+                    return False
 
-        self._container.push(
-            constants.NIFI_PROPERTIES_PATH,
-            rendered,
-            user=constants.WORKLOAD_USER,
-            group=constants.WORKLOAD_GROUP,
-            make_dirs=True,
-        )
+            self._container.push(
+                constants.NIFI_PROPERTIES_PATH,
+                rendered,
+                user=constants.WORKLOAD_USER,
+                group=constants.WORKLOAD_GROUP,
+                make_dirs=True,
+            )
+        except ops.pebble.APIError as e:
+            logger.exception("Failed to write nifi.properties: %s", e)
+            raise ExitWithStatusError(constants.MSG_CONFIG_WRITE_FAILED, ops.BlockedStatus)
+        return True
+
+    def _write_state_management_xml(self) -> bool:
+        """Write state-management.xml to the workload container.
+
+        Returns True if the file was created or updated, False if unchanged.
+        """
+        rendered = self._renderer.render_state_management_xml()
+        rendered_hash = hashlib.sha256(rendered.encode()).hexdigest()
+
+        try:
+            if self._container.exists(constants.STATE_MANAGEMENT_XML_PATH):
+                on_disk = self._container.pull(constants.STATE_MANAGEMENT_XML_PATH).read()
+                on_disk_hash = hashlib.sha256(on_disk.encode()).hexdigest()
+                if rendered_hash == on_disk_hash:
+                    return False
+
+            self._container.push(
+                constants.STATE_MANAGEMENT_XML_PATH,
+                rendered,
+                user=constants.WORKLOAD_USER,
+                group=constants.WORKLOAD_GROUP,
+                make_dirs=True,
+            )
+        except ops.pebble.APIError as e:
+            logger.exception("Failed to write state-management.xml: %s", e)
+            raise ExitWithStatusError(constants.MSG_CONFIG_WRITE_FAILED, ops.BlockedStatus)
         return True
 
     def _service_is_running(self) -> bool:
@@ -129,9 +163,17 @@ class NifiK8SOperatorCharm(ops.CharmBase):
                     "startup": "enabled",
                     "user": constants.WORKLOAD_USER,
                     "group": constants.WORKLOAD_GROUP,
-                    "working-dir": constants.NIFI_HOME,
                 }
-            }
+            },
+            "checks": {
+                "nifi-ready": {
+                    "override": "replace",
+                    "level": "ready",
+                    "startup": "enabled",
+                    "threshold": 3,
+                    "http": {"url": f"http://localhost:{constants.NIFI_PORT}/nifi"},
+                }
+            },
         }
 
     def _add_layer_and_replan(self, restart: bool = False) -> None:
@@ -152,25 +194,25 @@ class NifiK8SOperatorCharm(ops.CharmBase):
                 self._container.restart(constants.SERVICE_NAME)
         except ops.pebble.ChangeError as e:
             logger.exception("Pebble replan failed: %s", e)
-            raise ExitWithStatusError("Failed to (re)start NiFi service", ops.BlockedStatus)
+            raise ExitWithStatusError(constants.MSG_SERVICE_START_FAILED, ops.BlockedStatus)
         except ops.pebble.APIError as e:
             logger.exception("Pebble API error during restart: %s", e)
-            raise ExitWithStatusError("Failed to (re)start NiFi service", ops.BlockedStatus)
+            raise ExitWithStatusError(constants.MSG_SERVICE_START_FAILED, ops.BlockedStatus)
 
     def _reconcile(self, _) -> None:
         """Idempotent reconcile handler for all charm events.
 
         1. Verify container connectivity.
-        2. Render and push nifi.properties (if changed).
+        2. Render and push nifi.properties and state-management.xml (if changed).
         3. Apply pebble layer and (re)start the service as needed.
         """
         try:
-            if not self._container.can_connect():
-                raise ExitWithStatusError("Waiting for Pebble to be ready", ops.WaitingStatus)
-
+            self._check_pebble_connection()
             self._ensure_storage_dirs()
             was_running = self._service_is_running()
-            config_changed = self._write_nifi_properties()
+            props_changed = self._write_nifi_properties()
+            sm_changed = self._write_state_management_xml()
+            config_changed = props_changed or sm_changed
 
             # On first boot, replan starts the service (startup: enabled).
             # On subsequent reconciles with config changes, restart is required
@@ -181,8 +223,16 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             self.unit.status = e.status
             return
 
-        self.unit.status = ops.ActiveStatus()
+        # Gate active on the Pebble HTTP check so we don't claim active while
+        # NiFi is still booting (replan() returns as soon as the process launches).
+        checks = self._container.get_checks("nifi-ready")
+        nifi_ready = checks.get("nifi-ready")
+        if nifi_ready and nifi_ready.status == ops.pebble.CheckStatus.UP:
+            self.unit.status = ops.ActiveStatus()
+        else:
+            self.unit.status = ops.MaintenanceStatus(constants.MSG_NIFI_STARTING)
 
 
 if __name__ == "__main__":
     ops.main(NifiK8SOperatorCharm)
+

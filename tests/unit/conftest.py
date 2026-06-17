@@ -1,6 +1,7 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
+import ops
 import ops.testing
 import pytest
 
@@ -13,11 +14,29 @@ def context():
     return ops.testing.Context(NifiK8SOperatorCharm)
 
 
+# Pre-built layer so tests can reference the check without duplicating it.
+_NIFI_READY_LAYER = ops.pebble.Layer(
+    {
+        "checks": {
+            "nifi-ready": {
+                "override": "replace",
+                "level": "ready",
+                "startup": "enabled",
+                "threshold": 3,
+                "http": {"url": f"http://localhost:{constants.NIFI_PORT}/nifi"},
+            }
+        }
+    }
+)
+
+
 @pytest.fixture()
 def container():
     return ops.testing.Container(
         name=constants.CONTAINER_NAME,
         can_connect=True,
+        # Pre-populate the plan so check_infos passes the consistency check.
+        layers={"nifi-check": _NIFI_READY_LAYER},
         execs={
             ops.testing.Exec(
                 [
@@ -30,9 +49,50 @@ def container():
                 ],
             ),
         },
+        check_infos={
+            ops.testing.CheckInfo(
+                "nifi-ready",
+                level=ops.pebble.CheckLevel.READY,
+                status=ops.pebble.CheckStatus.UP,
+            ),
+        },
     )
 
 
 @pytest.fixture()
 def state(container):
     return ops.testing.State(containers=[container])
+
+
+@pytest.fixture()
+def disconnected_state():
+    """State with a container that cannot be connected to."""
+    container = ops.testing.Container(name=constants.CONTAINER_NAME, can_connect=False)
+    return ops.testing.State(containers=[container]), container
+
+
+@pytest.fixture()
+def running_container(container):
+    """Container with NiFi already active — for testing reconcile with a live service."""
+    service_layer = ops.pebble.Layer(
+        {
+            "services": {
+                constants.SERVICE_NAME: {
+                    "override": "replace",
+                    "summary": "Apache NiFi",
+                    "command": f"{constants.NIFI_HOME}/bin/nifi.sh run",
+                    "startup": "enabled",
+                    "user": constants.WORKLOAD_USER,
+                    "group": constants.WORKLOAD_GROUP,
+                }
+            }
+        }
+    )
+    return ops.testing.Container(
+        name=constants.CONTAINER_NAME,
+        can_connect=True,
+        service_statuses={constants.SERVICE_NAME: ops.pebble.ServiceStatus.ACTIVE},
+        layers={**container.layers, "nifi": service_layer},
+        execs=container.execs,
+        check_infos=container.check_infos,
+    )

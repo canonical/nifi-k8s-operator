@@ -39,6 +39,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
 
         for event in [
             self.on[constants.CONTAINER_NAME].pebble_ready,
+            self.on.start,
             self.on.config_changed,
             self.on.update_status,
         ]:

@@ -17,7 +17,8 @@ links:
   source:
     - https://github.com/canonical/nifi-k8s-operator
 
-base: ubuntu@24.04
+base: ubuntu@26.04
+build-base: ubuntu@devel
 platforms:
   amd64:
 

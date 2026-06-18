@@ -39,7 +39,6 @@ class NifiK8SOperatorCharm(ops.CharmBase):
 
         for event in [
             self.on[constants.CONTAINER_NAME].pebble_ready,
-            # self.on.start,
             self.on.config_changed,
             self.on.update_status,
         ]:
@@ -94,7 +93,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
                         *mount_roots,
                     ]
                 ).wait()
-        except ops.pebble.APIError as e:
+        except ops.pebble.Error as e:
             logger.exception("Failed to create storage directories: %s", e)
             raise ExitWithStatusError(constants.MSG_CONFIG_WRITE_FAILED, ops.BlockedStatus)
 
@@ -120,7 +119,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
                 group=constants.WORKLOAD_GROUP,
                 make_dirs=True,
             )
-        except ops.pebble.APIError as e:
+        except ops.pebble.Error as e:
             logger.exception("Failed to write nifi.properties: %s", e)
             raise ExitWithStatusError(constants.MSG_CONFIG_WRITE_FAILED, ops.BlockedStatus)
         return True
@@ -141,7 +140,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
                 group=constants.WORKLOAD_GROUP,
                 make_dirs=True,
             )
-        except ops.pebble.APIError as e:
+        except ops.pebble.Error as e:
             logger.exception("Failed to write state-management.xml: %s", e)
             raise ExitWithStatusError(constants.MSG_CONFIG_WRITE_FAILED, ops.BlockedStatus)
 

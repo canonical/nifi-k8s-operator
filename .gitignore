@@ -1,0 +1,4 @@
+.venv
+*.charm
+__pycache__/
+*.pyc

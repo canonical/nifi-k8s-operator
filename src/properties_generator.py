@@ -10,7 +10,7 @@ import constants
 _TEMPLATES_DIR = "src/templates"
 
 
-class NifiPropertyRenderer:
+class NifiPropertiesGenerator:
     """Renders NiFi configuration files from Jinja2 templates."""
 
     def __init__(self, templates_dir: str = _TEMPLATES_DIR):

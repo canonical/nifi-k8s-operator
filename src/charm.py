@@ -10,7 +10,7 @@ import logging
 import ops
 
 import constants
-from properties_generator import NifiPropertyRenderer
+from properties_generator import NifiPropertiesGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
     def __init__(self, framework: ops.Framework):
         super().__init__(framework)
         self._container = self.unit.get_container(constants.CONTAINER_NAME)
-        self._renderer = NifiPropertyRenderer()
+        self._renderer = NifiPropertiesGenerator()
 
         for event in [
             self.on[constants.CONTAINER_NAME].pebble_ready,
@@ -130,10 +130,10 @@ class NifiK8SOperatorCharm(ops.CharmBase):
 
         The contents are static; no diffing is needed.
         """
-        if self._container.exists(constants.STATE_MANAGEMENT_XML_PATH):
-            return
-
         try:
+            if self._container.exists(constants.STATE_MANAGEMENT_XML_PATH):
+                return
+
             self._container.push(
                 constants.STATE_MANAGEMENT_XML_PATH,
                 self._renderer.render_state_management_xml(),
@@ -183,16 +183,19 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         The service starts automatically after replanning as startup is enabled.
 
         Args:
-            restart: If True, restart the service after replanning.
+            restart: If True, restart the service instead of replanning to avoid
+                a double-restart (replan restarts a running service when the plan
+                changes; an explicit restart on top would start it a second time).
 
         Raises:
             ExitWithStatusError: If replanning or restarting fails.
         """
         self._container.add_layer(constants.SERVICE_NAME, self._pebble_layer, combine=True)
         try:
-            self._container.replan()
             if restart:
                 self._container.restart(constants.SERVICE_NAME)
+            else:
+                self._container.replan()
         except ops.pebble.ChangeError as e:
             logger.exception("Pebble replan failed: %s", e)
             raise ExitWithStatusError(constants.MSG_SERVICE_START_FAILED, ops.BlockedStatus)

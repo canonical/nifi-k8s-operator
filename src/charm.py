@@ -149,7 +149,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         """Check if the NiFi pebble service is currently running."""
         try:
             return self._container.get_service(constants.SERVICE_NAME).is_running()
-        except (ops.pebble.APIError, ops.ModelError):
+        except ops.ModelError:
             return False
 
     @property

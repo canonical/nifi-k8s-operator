@@ -4,7 +4,6 @@
 """Unit tests for the NifiPropertiesGenerator."""
 
 import pytest
-from jinja2 import TemplateNotFound
 
 import constants
 from properties_generator import NifiPropertiesGenerator
@@ -23,10 +22,19 @@ class TestRenderNifiProperties:
         assert f"nifi.web.http.port={constants.NIFI_PORT}" in content
         assert f"nifi.sensitive.props.key={constants.SENSITIVE_PROPS_KEY}" in content
         assert f"nifi.database.directory={constants.DATA_DIR}/database_repository" in content
-        assert f"nifi.flowfile.repository.directory={constants.DATA_DIR}/flowfile_repository" in content
+        assert (
+            f"nifi.flowfile.repository.directory={constants.DATA_DIR}/flowfile_repository"
+            in content
+        )
         assert f"nifi.content.repository.directory.default={constants.CONTENT_REPO_DIR}" in content
-        assert f"nifi.provenance.repository.directory.default={constants.PROVENANCE_REPO_DIR}" in content
-        assert f"nifi.state.management.configuration.file={constants.STATE_MANAGEMENT_XML_PATH}" in content
+        assert (
+            f"nifi.provenance.repository.directory.default={constants.PROVENANCE_REPO_DIR}"
+            in content
+        )
+        assert (
+            f"nifi.state.management.configuration.file={constants.STATE_MANAGEMENT_XML_PATH}"
+            in content
+        )
         assert "nifi.security.allow.anonymous.authentication=true" in content
 
     def test_template_error_raises_runtime_error(self):

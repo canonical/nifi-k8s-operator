@@ -16,15 +16,20 @@ class NifiPropertiesGenerator:
     def __init__(self, templates_dir: str = _TEMPLATES_DIR):
         self._env = Environment(loader=FileSystemLoader(str(templates_dir)), autoescape=False)
 
-    def render_nifi_properties(self) -> str:
-        """Render nifi.properties from the Jinja2 template."""
+    def render_nifi_properties(self, sensitive_props_key: str) -> str:
+        """Render nifi.properties from the Jinja2 template.
+
+        Args:
+            sensitive_props_key: Value for nifi.sensitive.props.key, sourced from
+                the Juju user secret bound to the `sensitive-props-key` config.
+        """
         context = {
             "data_dir": constants.DATA_DIR,
             "content_repo_dir": constants.CONTENT_REPO_DIR,
             "provenance_repo_dir": constants.PROVENANCE_REPO_DIR,
             "http_host": constants.NIFI_HTTP_HOST,
             "http_port": constants.NIFI_PORT,
-            "sensitive_props_key": constants.SENSITIVE_PROPS_KEY,
+            "sensitive_props_key": sensitive_props_key,
             "state_management_xml_path": constants.STATE_MANAGEMENT_XML_PATH,
         }
         try:

@@ -5,6 +5,7 @@
 
 CONTAINER_NAME = "nifi"
 SERVICE_NAME = "nifi"
+READY_CHECK_NAME = "nifi-ready"
 
 # The upstream apache/nifi image runs as the nifi user.
 # This will change to "ubuntu" when the Canonical rock replaces the upstream image.

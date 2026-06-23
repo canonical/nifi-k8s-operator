@@ -18,7 +18,7 @@ def context():
 _NIFI_READY_LAYER = ops.pebble.Layer(
     {
         "checks": {
-            "nifi-ready": {
+            constants.READY_CHECK_NAME: {
                 "override": "replace",
                 "level": "ready",
                 "startup": "enabled",
@@ -61,7 +61,7 @@ def container():
         execs={_CHOWN_EXEC, *_STAT_EXECS},
         check_infos={
             ops.testing.CheckInfo(
-                "nifi-ready",
+                constants.READY_CHECK_NAME,
                 level=ops.pebble.CheckLevel.READY,
                 status=ops.pebble.CheckStatus.UP,
             ),
@@ -118,7 +118,7 @@ def booting_container(container):
         execs=container.execs,
         check_infos={
             ops.testing.CheckInfo(
-                "nifi-ready",
+                constants.READY_CHECK_NAME,
                 level=ops.pebble.CheckLevel.READY,
                 status=ops.pebble.CheckStatus.DOWN,
                 failures=1,

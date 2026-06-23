@@ -103,7 +103,11 @@ class NifiK8SOperatorCharm(ops.CharmBase):
 
         Returns True if the file was created or updated, False if unchanged.
         """
-        rendered = self._renderer.render_nifi_properties()
+        try:
+            rendered = self._renderer.render_nifi_properties()
+        except RuntimeError as e:
+            logger.exception("Failed to render nifi.properties: %s", e)
+            raise ExitWithStatusError(constants.MSG_CONFIG_WRITE_FAILED, ops.BlockedStatus)
         rendered_hash = hashlib.sha256(rendered.encode()).hexdigest()
 
         try:
@@ -131,12 +135,18 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         The contents are static; no diffing is needed.
         """
         try:
+            rendered_xml = self._renderer.render_state_management_xml()
+        except RuntimeError as e:
+            logger.exception("Failed to render state-management.xml: %s", e)
+            raise ExitWithStatusError(constants.MSG_CONFIG_WRITE_FAILED, ops.BlockedStatus)
+
+        try:
             if self._container.exists(constants.STATE_MANAGEMENT_XML_PATH):
                 return
 
             self._container.push(
                 constants.STATE_MANAGEMENT_XML_PATH,
-                self._renderer.render_state_management_xml(),
+                rendered_xml,
                 user=constants.WORKLOAD_USER,
                 group=constants.WORKLOAD_GROUP,
                 make_dirs=True,
@@ -146,7 +156,12 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             raise ExitWithStatusError(constants.MSG_CONFIG_WRITE_FAILED, ops.BlockedStatus)
 
     def _service_is_running(self) -> bool:
-        """Check if the NiFi pebble service is currently running."""
+        """Check if the NiFi pebble service is currently running.
+
+        Returns False on first boot before the layer has been applied,
+        when get_service() raises ModelError because the service is not yet
+        registered in the pebble plan.
+        """
         try:
             return self._container.get_service(constants.SERVICE_NAME).is_running()
         except ops.ModelError:
@@ -167,7 +182,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
                 }
             },
             "checks": {
-                "nifi-ready": {
+                constants.READY_CHECK_NAME: {
                     "override": "replace",
                     "level": "ready",
                     "startup": "enabled",
@@ -196,11 +211,8 @@ class NifiK8SOperatorCharm(ops.CharmBase):
                 self._container.restart(constants.SERVICE_NAME)
             else:
                 self._container.replan()
-        except ops.pebble.ChangeError as e:
-            logger.exception("Pebble replan failed: %s", e)
-            raise ExitWithStatusError(constants.MSG_SERVICE_START_FAILED, ops.BlockedStatus)
-        except ops.pebble.APIError as e:
-            logger.exception("Pebble API error during restart: %s", e)
+        except ops.pebble.Error as e:
+            logger.exception("Pebble (re)start failed: %s", e)
             raise ExitWithStatusError(constants.MSG_SERVICE_START_FAILED, ops.BlockedStatus)
 
     def _reconcile(self, _) -> None:
@@ -228,9 +240,10 @@ class NifiK8SOperatorCharm(ops.CharmBase):
 
         # Gate active on the Pebble HTTP check so we don't claim active while
         # NiFi is still booting (replan() returns as soon as the process launches).
-        checks = self._container.get_checks("nifi-ready")
-        nifi_ready = checks.get("nifi-ready")
-        if nifi_ready and nifi_ready.status == ops.pebble.CheckStatus.UP:
+        check = self._container.get_checks(constants.READY_CHECK_NAME).get(
+            constants.READY_CHECK_NAME
+        )
+        if check and check.status == ops.pebble.CheckStatus.UP:
             self.unit.status = ops.ActiveStatus()
         else:
             self.unit.status = ops.MaintenanceStatus(constants.MSG_NIFI_STARTING)

@@ -3,6 +3,8 @@
 
 """Unit tests for the NiFi K8s charm."""
 
+from unittest.mock import patch
+
 import ops
 import ops.testing
 import pytest
@@ -58,7 +60,7 @@ class TestPebbleLayer:
             constants.WORKLOAD_GROUP,
         )
 
-        check = plan.checks["nifi-ready"]
+        check = plan.checks[constants.READY_CHECK_NAME]
         assert (check.level, check.threshold, check.http) == (
             ops.pebble.CheckLevel.READY,
             3,
@@ -139,3 +141,31 @@ class TestReconcileIdempotency:
         root2 = state_after_second.get_container(constants.CONTAINER_NAME).get_filesystem(context)
         content = (root2 / constants.NIFI_PROPERTIES_PATH.lstrip("/")).read_text()
         assert content == original
+
+
+class TestFailureModes:
+    @pytest.mark.parametrize(
+        "target, side_effect",
+        [
+            (
+                "properties_generator.NifiPropertiesGenerator.render_nifi_properties",
+                RuntimeError("template error"),
+            ),
+            (
+                "properties_generator.NifiPropertiesGenerator.render_state_management_xml",
+                RuntimeError("template error"),
+            ),
+            (
+                "ops.Container.push",
+                ops.pebble.APIError({}, 500, "Internal Error", "push failed"),
+            ),
+        ],
+        ids=["render_properties", "render_state_xml", "pebble_push"],
+    )
+    def test_config_write_failure_goes_blocked(
+        self, context, state, container, target, side_effect
+    ):
+        """Charm enters BlockedStatus when config rendering or pushing fails."""
+        with patch(target, side_effect=side_effect):
+            state_out = context.run(context.on.pebble_ready(container), state)
+        assert state_out.unit_status == ops.BlockedStatus(constants.MSG_CONFIG_WRITE_FAILED)

@@ -3,7 +3,7 @@
 
 """NiFi configuration file renderer."""
 
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, TemplateError
 
 import constants
 
@@ -27,10 +27,16 @@ class NifiPropertiesGenerator:
             "sensitive_props_key": constants.SENSITIVE_PROPS_KEY,
             "state_management_xml_path": constants.STATE_MANAGEMENT_XML_PATH,
         }
-        return self._env.get_template("nifi.properties.j2").render(**context)
+        try:
+            return self._env.get_template("nifi.properties.j2").render(**context)
+        except TemplateError as e:
+            raise RuntimeError(f"Failed to render nifi.properties: {e}") from e
 
     def render_state_management_xml(self) -> str:
         """Render state-management.xml from the Jinja2 template."""
-        return self._env.get_template("state-management.xml.j2").render(
-            data_dir=constants.DATA_DIR
-        )
+        try:
+            return self._env.get_template("state-management.xml.j2").render(
+                data_dir=constants.DATA_DIR
+            )
+        except TemplateError as e:
+            raise RuntimeError(f"Failed to render state-management.xml: {e}") from e

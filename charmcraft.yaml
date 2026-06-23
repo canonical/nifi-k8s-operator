@@ -48,7 +48,7 @@ resources:
   nifi-image:
     type: oci-image
     description: Apache NiFi OCI image
-    upstream-source: docker.io/apache/nifi:2.9.0
+    upstream-source: docker.io/apache/nifi:2.10.0
 
 storage:
   nifi-data:

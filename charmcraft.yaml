@@ -1,0 +1,62 @@
+# Copyright 2026 Canonical Ltd.
+# See LICENSE file for licensing details.
+
+type: charm
+name: nifi-k8s
+title: Apache NiFi
+summary: A Juju charm for deploying Apache NiFi on Kubernetes
+description: |
+  A Juju charm for deploying and managing Apache NiFi 2.x on Kubernetes.
+  Apache NiFi is a data logistics platform for automating the movement
+  and transformation of data between systems.
+
+links:
+  contact: Workflows Team <workflows-charmers@canonical.com>
+  issues:
+    - https://github.com/canonical/nifi-k8s-operator/issues
+  source:
+    - https://github.com/canonical/nifi-k8s-operator
+
+base: ubuntu@26.04
+platforms:
+  amd64:
+
+parts:
+  charm:
+    plugin: uv
+    source: .
+    build-snaps:
+      - astral-uv
+  files:
+    plugin: dump
+    source: .
+    stage:
+      - LICENSE
+
+containers:
+  nifi:
+    resource: nifi-image
+    mounts:
+      - storage: nifi-data
+        location: /var/lib/nifi/data
+      - storage: content-repo
+        location: /var/lib/nifi/content_repository
+      - storage: provenance-repo
+        location: /var/lib/nifi/provenance_repository
+
+resources:
+  nifi-image:
+    type: oci-image
+    description: Apache NiFi OCI image
+    upstream-source: docker.io/apache/nifi:2.10.0
+
+storage:
+  nifi-data:
+    type: filesystem
+    minimum-size: 10G
+  content-repo:
+    type: filesystem
+    minimum-size: 20G
+  provenance-repo:
+    type: filesystem
+    minimum-size: 20G

@@ -8,6 +8,8 @@ import pytest
 import constants
 from properties_generator import NifiPropertiesGenerator
 
+_TEST_KEY = "test-sensitive-key-32-characters!"
+
 
 @pytest.fixture()
 def generator():
@@ -17,10 +19,10 @@ def generator():
 class TestRenderNifiProperties:
     def test_contains_expected_properties(self, generator):
         """Rendered nifi.properties contains all expected key=value pairs."""
-        content = generator.render_nifi_properties()
+        content = generator.render_nifi_properties(sensitive_props_key=_TEST_KEY)
         assert f"nifi.web.http.host={constants.NIFI_HTTP_HOST}" in content
         assert f"nifi.web.http.port={constants.NIFI_PORT}" in content
-        assert f"nifi.sensitive.props.key={constants.SENSITIVE_PROPS_KEY}" in content
+        assert f"nifi.sensitive.props.key={_TEST_KEY}" in content
         assert f"nifi.database.directory={constants.DATA_DIR}/database_repository" in content
         assert (
             f"nifi.flowfile.repository.directory={constants.DATA_DIR}/flowfile_repository"
@@ -41,7 +43,7 @@ class TestRenderNifiProperties:
         """A missing template raises RuntimeError."""
         gen = NifiPropertiesGenerator(templates_dir="nonexistent/path")
         with pytest.raises(RuntimeError, match="Failed to render nifi.properties"):
-            gen.render_nifi_properties()
+            gen.render_nifi_properties(sensitive_props_key=_TEST_KEY)
 
 
 class TestRenderStateManagementXml:

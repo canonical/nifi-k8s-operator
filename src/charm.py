@@ -10,7 +10,7 @@ import logging
 import ops
 
 import constants
-from properties_generator import NifiPropertiesGenerator
+from properties_manager import NifiPropertiesManager
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
     def __init__(self, framework: ops.Framework):
         super().__init__(framework)
         self._container = self.unit.get_container(constants.CONTAINER_NAME)
-        self._renderer = NifiPropertiesGenerator()
+        self._renderer = NifiPropertiesManager()
 
         for event in [
             self.on[constants.CONTAINER_NAME].pebble_ready,
@@ -91,7 +91,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
                 missing the expected field, or shorter than the minimum length
                 (applies only on first boot before the file exists on disk).
         """
-        existing = NifiPropertiesGenerator.get_workload_property(
+        existing = NifiPropertiesManager.get_nifi_property(
             self._container, "nifi.sensitive.props.key"
         )
         if existing:

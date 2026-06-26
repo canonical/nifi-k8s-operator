@@ -154,11 +154,11 @@ class TestFailureModes:
         "target, side_effect",
         [
             (
-                "properties_generator.NifiPropertiesGenerator.render_nifi_properties",
+                "properties_manager.NifiPropertiesManager.render_nifi_properties",
                 RuntimeError("template error"),
             ),
             (
-                "properties_generator.NifiPropertiesGenerator.render_state_management_xml",
+                "properties_manager.NifiPropertiesManager.render_state_management_xml",
                 RuntimeError("template error"),
             ),
             (

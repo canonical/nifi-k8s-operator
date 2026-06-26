@@ -1,19 +1,19 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""Unit tests for the NifiPropertiesGenerator."""
+"""Unit tests for the NifiPropertiesManager."""
 
 import pytest
 
 import constants
-from properties_generator import NifiPropertiesGenerator
+from properties_manager import NifiPropertiesManager
 
 _TEST_KEY = "test-sensitive-key-32-characters!"
 
 
 @pytest.fixture()
 def generator():
-    return NifiPropertiesGenerator(templates_dir="src/templates")
+    return NifiPropertiesManager(templates_dir="src/templates")
 
 
 class TestRenderNifiProperties:
@@ -41,7 +41,7 @@ class TestRenderNifiProperties:
 
     def test_template_error_raises_runtime_error(self):
         """A missing template raises RuntimeError."""
-        gen = NifiPropertiesGenerator(templates_dir="nonexistent/path")
+        gen = NifiPropertiesManager(templates_dir="nonexistent/path")
         with pytest.raises(RuntimeError, match="Failed to render nifi.properties"):
             gen.render_nifi_properties(sensitive_props_key=_TEST_KEY)
 
@@ -54,6 +54,6 @@ class TestRenderStateManagementXml:
 
     def test_template_error_raises_runtime_error(self):
         """A missing template raises RuntimeError."""
-        gen = NifiPropertiesGenerator(templates_dir="nonexistent/path")
+        gen = NifiPropertiesManager(templates_dir="nonexistent/path")
         with pytest.raises(RuntimeError, match="Failed to render state-management.xml"):
             gen.render_state_management_xml()

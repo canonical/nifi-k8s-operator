@@ -9,8 +9,10 @@ import logging
 
 import charms.git_integrator.v0.git as git
 import ops
+import requests
 
 import constants
+from nifi_rest_client import NifiRestClient
 from properties_generator import NifiPropertiesGenerator
 
 logger = logging.getLogger(__name__)
@@ -48,14 +50,65 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             self.on.start,
             self.on.config_changed,
             self.on.update_status,
+            self.on[constants.GIT_REGISTRY_RELATION].relation_broken,
         ]:
             self.framework.observe(event, self._reconcile)
 
-    def _check_git_registry(self) -> None:
-        """If a git-registry relation exists but is not yet ready, raise."""
-        relations = self.git_registry.relations
-        if relations and not self.git_registry.is_ready():
-            raise ExitWithStatusError(constants.MSG_GIT_REGISTRY_NOT_READY, ops.WaitingStatus)
+
+    def _configure_git_registry_client(self) -> None:
+        """Configure NiFi flow registry client via REST API using git-registry relation data.
+
+        Raises:
+            requests.RequestException: If REST API call fails
+            ValueError: If repository URL is invalid
+        """
+        connection_info_dict = self.git_registry.get_git_connection_information()
+        if not connection_info_dict:
+            return
+
+        # Get the first (and should be only) relation's connection info
+        # (charmcraft.yaml declares limit: 1 for git-registry)
+        connection_info = next(iter(connection_info_dict.values()))
+
+        repository_url = connection_info.repository_url
+        branch = connection_info.tracking_ref or "main"
+        username = getattr(connection_info, "credentials_username", None)
+        
+        # Handle both credential field names (credentials_personal_access_token for provider,
+        # credentials_access_token as alias in databag)
+        token = getattr(connection_info, "credentials_personal_access_token", None)
+        if not token:
+            token = getattr(connection_info, "credentials_access_token", None)
+
+        nifi_api_url = f"http://localhost:{constants.NIFI_PORT}"
+        client = NifiRestClient(nifi_api_url)
+        client.create_or_update_registry_client(
+            name=constants.FLOW_REGISTRY_CLIENT_NAME,
+            repository_url=repository_url,
+            branch=branch,
+            username=username,
+            token=token,
+        )
+        logger.info(
+            "Configured NiFi flow registry client: %s (repo=%s, branch=%s)",
+            constants.FLOW_REGISTRY_CLIENT_NAME,
+            repository_url,
+            branch,
+        )
+
+    def _delete_git_registry_client(self) -> None:
+        """Delete NiFi flow registry client via REST API.
+
+        Best-effort cleanup; errors are logged but not raised.
+        """
+        try:
+            nifi_api_url = f"http://localhost:{constants.NIFI_PORT}"
+            client = NifiRestClient(nifi_api_url)
+            deleted = client.delete_registry_client(constants.FLOW_REGISTRY_CLIENT_NAME)
+            if deleted:
+                logger.info("Deleted NiFi flow registry client: %s", constants.FLOW_REGISTRY_CLIENT_NAME)
+        except requests.RequestException as e:
+            logger.warning("Failed to delete flow registry client (best-effort): %s", e)
 
     def _check_pebble_connection(self) -> None:
         """Verify connection to the container; otherwise raise."""
@@ -230,13 +283,19 @@ class NifiK8SOperatorCharm(ops.CharmBase):
     def _reconcile(self, _) -> None:
         """Idempotent reconcile handler for all charm events.
 
+        All events funnel through here. The reconcile inspects the current
+        world state and converges to the correct unit status:
+
         1. Verify container connectivity.
-        2. Render and push nifi.properties and state-management.xml (if changed).
-        3. Apply pebble layer and (re)start the service as needed.
+        2. Ensure storage directories exist.
+        3. Render and push nifi.properties and state-management.xml.
+        4. Apply pebble layer and (re)start the service as needed.
+        5. Wait for NiFi to become ready.
+        6. Check git-registry relation (required).
+        7. Configure or clean up the flow registry client via REST API.
         """
         try:
             self._check_pebble_connection()
-            self._check_git_registry()
             self._ensure_storage_dirs()
             was_running = self._service_is_running()
             config_changed = self._write_nifi_properties()
@@ -251,15 +310,36 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             self.unit.status = e.status
             return
 
-        # Gate active on the Pebble HTTP check so we don't claim active while
-        # NiFi is still booting (replan() returns as soon as the process launches).
+        # Gate on the Pebble HTTP check so we don't call the NiFi API
+        # while NiFi is still booting.
         check = self._container.get_checks(constants.READY_CHECK_NAME).get(
             constants.READY_CHECK_NAME
         )
-        if check and check.status == ops.pebble.CheckStatus.UP:
-            self.unit.status = ops.ActiveStatus()
-        else:
+        if not (check and check.status == ops.pebble.CheckStatus.UP):
             self.unit.status = ops.MaintenanceStatus(constants.MSG_NIFI_STARTING)
+            return
+
+        # NiFi is up — now reconcile the git-registry relation state.
+        if not self.git_registry.relations or not self.git_registry.is_ready():
+            # No relation or not ready: clean up any existing registry client
+            self._delete_git_registry_client()
+            if self.git_registry.relations and not self.git_registry.is_ready():
+                # Relation joined but not ready yet
+                self.unit.status = ops.WaitingStatus(constants.MSG_GIT_REGISTRY_NOT_READY)
+                return
+            # No relation - that's fine, git-registry is optional
+            self.unit.status = ops.ActiveStatus()
+            return
+
+        # Relation exists and is ready - configure the registry client
+        try:
+            self._configure_git_registry_client()
+        except (requests.RequestException, ValueError) as e:
+            logger.exception("Failed to configure flow registry client: %s", e)
+            self.unit.status = ops.BlockedStatus(constants.MSG_GIT_REGISTRY_API_ERROR)
+            return
+
+        self.unit.status = ops.ActiveStatus()
 
 
 if __name__ == "__main__":

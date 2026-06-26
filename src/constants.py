@@ -42,6 +42,11 @@ MSG_NIFI_STARTING = "NiFi is starting"
 MSG_SERVICE_START_FAILED = "Failed to (re)start NiFi service"
 MSG_CONFIG_WRITE_FAILED = "Failed to write NiFi configuration"
 MSG_GIT_REGISTRY_NOT_READY = "Waiting for git-registry relation data"
+MSG_GIT_REGISTRY_MISSING = "Missing required git-registry relation"
+MSG_GIT_REGISTRY_API_ERROR = "Failed to configure NiFi flow registry client"
 
 # Relation names
 GIT_REGISTRY_RELATION = "git-registry"
+
+# NiFi flow registry client
+FLOW_REGISTRY_CLIENT_NAME = "juju-git-registry"

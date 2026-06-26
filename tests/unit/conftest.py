@@ -145,6 +145,32 @@ def git_registry_relation_ready():
 
 
 @pytest.fixture()
+def git_registry_relation_with_credentials():
+    """git-registry relation with authentication credentials."""
+    return ops.testing.Relation(
+        constants.GIT_REGISTRY_RELATION,
+        remote_app_data={
+            "repository-url": "https://github.com/example/nifi-flows.git",
+            "tracking-ref": "develop",
+            "credentials-username": "git-user",
+            "credentials-personal-access-token": "ghp_test_token_123",
+        },
+    )
+
+
+@pytest.fixture()
+def git_registry_relation_gitlab():
+    """git-registry relation pointing to a GitLab repository."""
+    return ops.testing.Relation(
+        constants.GIT_REGISTRY_RELATION,
+        remote_app_data={
+            "repository-url": "https://gitlab.com/canonical/nifi-registry.git",
+            "tracking-ref": "main",
+        },
+    )
+
+
+@pytest.fixture()
 def git_registry_relation_empty():
     """git-registry relation joined but provider data not yet written."""
     return ops.testing.Relation(

@@ -3,6 +3,7 @@
 
 """Unit tests for the NiFi K8s charm."""
 
+import dataclasses
 import pathlib
 import tempfile
 from unittest.mock import patch
@@ -218,18 +219,14 @@ class TestSensitivePropsKey:
             (conf_dir / "nifi.properties").write_text(
                 f"nifi.sensitive.props.key={SENSITIVE_KEY_VALUE}\n"
             )
-            mounted_container = ops.testing.Container(
-                name=constants.CONTAINER_NAME,
-                can_connect=True,
+            mounted_container = dataclasses.replace(
+                container,
                 mounts={
                     "conf": ops.testing.Mount(
                         location=f"{constants.NIFI_HOME}/conf",
                         source=conf_dir,
                     )
                 },
-                layers=container.layers,
-                execs=container.execs,
-                check_infos=container.check_infos,
             )
             state = ops.testing.State(
                 containers=[mounted_container],

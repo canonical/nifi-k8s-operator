@@ -1,11 +1,15 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""NiFi configuration file renderer."""
+"""NiFi configuration file renderer and workload property reader."""
+
+import logging
 
 from jinja2 import Environment, FileSystemLoader, TemplateError
 
 import constants
+
+logger = logging.getLogger(__name__)
 
 _TEMPLATES_DIR = "src/templates"
 
@@ -45,3 +49,21 @@ class NifiPropertiesGenerator:
             )
         except TemplateError as e:
             raise RuntimeError(f"Failed to render state-management.xml: {e}") from e
+
+    @staticmethod
+    def get_workload_property(container, property_name: str) -> str | None:
+        """Read a single property value from the on-disk nifi.properties file.
+
+        Returns None if the file does not exist or the property is not found.
+        """
+        try:
+            if not container.exists(constants.NIFI_PROPERTIES_PATH):
+                return None
+            content = container.pull(constants.NIFI_PROPERTIES_PATH).read()
+            prefix = f"{property_name}="
+            for line in content.splitlines():
+                if line.startswith(prefix):
+                    return line.split("=", 1)[1]
+        except Exception:
+            logger.warning("Failed to read %s from workload nifi.properties", property_name)
+        return None

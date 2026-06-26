@@ -66,47 +66,21 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         if not connection_info_dict:
             return
 
-        # Get the first (and should be only) relation's connection info
-        # (charmcraft.yaml declares limit: 1 for git-registry)
-        connection_info = next(iter(connection_info_dict.values()))
-
-        repository_url = connection_info.repository_url
-        branch = connection_info.tracking_ref or "main"
-        username = getattr(connection_info, "credentials_username", None)
-        
-        # Handle both credential field names (credentials_personal_access_token for provider,
-        # credentials_access_token as alias in databag)
-        token = getattr(connection_info, "credentials_personal_access_token", None)
-        if not token:
-            token = getattr(connection_info, "credentials_access_token", None)
-
-        nifi_api_url = f"http://localhost:{constants.NIFI_PORT}"
-        client = NifiRestClient(nifi_api_url)
+        info = next(iter(connection_info_dict.values()))
+        client = NifiRestClient(f"http://localhost:{constants.NIFI_PORT}")
         client.create_or_update_registry_client(
             name=constants.FLOW_REGISTRY_CLIENT_NAME,
-            repository_url=repository_url,
-            branch=branch,
-            username=username,
-            token=token,
-        )
-        logger.info(
-            "Configured NiFi flow registry client: %s (repo=%s, branch=%s)",
-            constants.FLOW_REGISTRY_CLIENT_NAME,
-            repository_url,
-            branch,
+            repository_url=info.repository_url,
+            branch=info.tracking_ref or "main",
+            username=getattr(info, "credentials_username", None),
+            token=getattr(info, "credentials_personal_access_token", None),
         )
 
     def _delete_git_registry_client(self) -> None:
-        """Delete NiFi flow registry client via REST API.
-
-        Best-effort cleanup; errors are logged but not raised.
-        """
+        """Delete NiFi flow registry client via REST API. Best-effort."""
         try:
-            nifi_api_url = f"http://localhost:{constants.NIFI_PORT}"
-            client = NifiRestClient(nifi_api_url)
-            deleted = client.delete_registry_client(constants.FLOW_REGISTRY_CLIENT_NAME)
-            if deleted:
-                logger.info("Deleted NiFi flow registry client: %s", constants.FLOW_REGISTRY_CLIENT_NAME)
+            client = NifiRestClient(f"http://localhost:{constants.NIFI_PORT}")
+            client.delete_registry_client(constants.FLOW_REGISTRY_CLIENT_NAME)
         except requests.RequestException as e:
             logger.warning("Failed to delete flow registry client (best-effort): %s", e)
 

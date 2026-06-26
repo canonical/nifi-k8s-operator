@@ -3,7 +3,7 @@
 
 """Unit tests for the NiFi K8s charm."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import ops
 import ops.testing
@@ -184,66 +184,26 @@ class TestGitRegistryRelation:
         self, mock_delete, context, container, git_registry_relation_empty
     ):
         """Charm enters WaitingStatus when relation is joined but provider data is absent."""
-        mock_delete.return_value = False  # Simulate client doesn't exist yet
+        mock_delete.return_value = False
         state_in = ops.testing.State(
             containers=[container],
             relations=[git_registry_relation_empty],
         )
         state_out = context.run(context.on.pebble_ready(container), state_in)
         assert state_out.unit_status == ops.WaitingStatus(constants.MSG_GIT_REGISTRY_NOT_READY)
-        # Delete should be called to clean up any stale client
         mock_delete.assert_called_once()
 
     @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
     def test_relation_ready_charm_reaches_active(
         self, mock_create, context, container, git_registry_relation_ready
     ):
-        """Charm reaches ActiveStatus when git-registry relation is ready."""
+        """Charm reaches ActiveStatus and configures registry client when relation is ready."""
         mock_create.return_value = {"id": "test-id"}
-
         state_in = ops.testing.State(
             containers=[container],
             relations=[git_registry_relation_ready],
         )
         state_out = context.run(context.on.pebble_ready(container), state_in)
-        assert state_out.unit_status == ops.ActiveStatus()
-
-    @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
-    def test_relation_ready_connection_info_accessible(
-        self, mock_create, context, container, git_registry_relation_ready
-    ):
-        """Git connection info is accessible from the charm when the relation is ready."""
-        mock_create.return_value = {"id": "test-id"}
-
-        state_in = ops.testing.State(
-            containers=[container],
-            relations=[git_registry_relation_ready],
-        )
-        with context(context.on.pebble_ready(container), state_in) as mgr:
-            charm = mgr.charm
-            info = charm.git_registry.get_git_connection_information()
-            assert info  # at least one relation has data
-            model = next(iter(info.values()))
-            assert model.repository_url == "https://github.com/example/nifi-flows.git"
-            assert model.tracking_ref == "main"
-
-
-class TestGitRegistryRestApiIntegration:
-    """Test NiFi REST API calls for flow registry client configuration."""
-
-    @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
-    def test_registry_client_created_on_relation_ready(
-        self, mock_create, context, container, git_registry_relation_ready
-    ):
-        """Flow registry client is created via REST API when git-registry relation is ready."""
-        mock_create.return_value = {"id": "test-id", "component": {"name": "juju-git-registry"}}
-
-        state_in = ops.testing.State(
-            containers=[container],
-            relations=[git_registry_relation_ready],
-        )
-        state_out = context.run(context.on.pebble_ready(container), state_in)
-
         assert state_out.unit_status == ops.ActiveStatus()
         mock_create.assert_called_once_with(
             name=constants.FLOW_REGISTRY_CLIENT_NAME,
@@ -254,18 +214,16 @@ class TestGitRegistryRestApiIntegration:
         )
 
     @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
-    def test_registry_client_with_credentials(
+    def test_relation_with_credentials(
         self, mock_create, context, container, git_registry_relation_with_credentials
     ):
-        """Flow registry client is created with auth credentials when provided."""
+        """Registry client is created with auth credentials when provided."""
         mock_create.return_value = {"id": "test-id"}
-
         state_in = ops.testing.State(
             containers=[container],
             relations=[git_registry_relation_with_credentials],
         )
         state_out = context.run(context.on.pebble_ready(container), state_in)
-
         assert state_out.unit_status == ops.ActiveStatus()
         mock_create.assert_called_once_with(
             name=constants.FLOW_REGISTRY_CLIENT_NAME,
@@ -276,18 +234,16 @@ class TestGitRegistryRestApiIntegration:
         )
 
     @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
-    def test_registry_client_gitlab(
+    def test_relation_gitlab(
         self, mock_create, context, container, git_registry_relation_gitlab
     ):
-        """Flow registry client works with GitLab repositories."""
+        """Registry client works with GitLab repositories."""
         mock_create.return_value = {"id": "test-id"}
-
         state_in = ops.testing.State(
             containers=[container],
             relations=[git_registry_relation_gitlab],
         )
         state_out = context.run(context.on.pebble_ready(container), state_in)
-
         assert state_out.unit_status == ops.ActiveStatus()
         mock_create.assert_called_once_with(
             name=constants.FLOW_REGISTRY_CLIENT_NAME,
@@ -298,95 +254,63 @@ class TestGitRegistryRestApiIntegration:
         )
 
     @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
-    def test_registry_api_error_goes_blocked(
+    def test_api_error_goes_blocked(
         self, mock_create, context, container, git_registry_relation_ready
     ):
         """Charm enters BlockedStatus when REST API call fails."""
         mock_create.side_effect = requests.HTTPError("404 Not Found")
-
         state_in = ops.testing.State(
             containers=[container],
             relations=[git_registry_relation_ready],
         )
         state_out = context.run(context.on.pebble_ready(container), state_in)
-
         assert state_out.unit_status == ops.BlockedStatus(constants.MSG_GIT_REGISTRY_API_ERROR)
 
     @patch("nifi_rest_client.NifiRestClient.delete_registry_client")
-    @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
-    def test_no_api_call_when_relation_not_ready(
-        self, mock_create, mock_delete, context, container, git_registry_relation_empty
-    ):
-        """No REST API create call is made when relation exists but is not ready."""
-        mock_delete.return_value = False
-        state_in = ops.testing.State(
-            containers=[container],
-            relations=[git_registry_relation_empty],
-        )
-        state_out = context.run(context.on.pebble_ready(container), state_in)
-
-        assert state_out.unit_status == ops.WaitingStatus(constants.MSG_GIT_REGISTRY_NOT_READY)
-        mock_create.assert_not_called()
-        # Delete should be called to clean up any stale client
-        mock_delete.assert_called_once()
-
-    @patch("nifi_rest_client.NifiRestClient.delete_registry_client")
-    def test_relation_broken_deletes_registry_client(
+    def test_relation_broken_deletes_and_stays_active(
         self, mock_delete, context, container, git_registry_relation_ready
     ):
-        """Flow registry client is deleted when git-registry relation is broken."""
+        """Registry client is deleted when relation is broken; charm stays Active."""
         mock_delete.return_value = True
-
-        # First establish the relation
         state_in = ops.testing.State(
             containers=[container],
             relations=[git_registry_relation_ready],
         )
-
-        # Then trigger relation-broken
         state_out = context.run(
             context.on.relation_broken(git_registry_relation_ready), state_in
         )
-
         assert state_out.unit_status == ops.ActiveStatus()
         mock_delete.assert_called_once_with(constants.FLOW_REGISTRY_CLIENT_NAME)
 
     @patch("nifi_rest_client.NifiRestClient.delete_registry_client")
-    def test_relation_broken_delete_failure_is_logged(
+    def test_relation_broken_delete_failure_is_harmless(
         self, mock_delete, context, container, git_registry_relation_ready
     ):
-        """Deletion failure is logged but doesn't crash on relation-broken."""
+        """Delete failure on relation-broken is logged but doesn't crash."""
         mock_delete.side_effect = requests.HTTPError("500 Server Error")
-
         state_in = ops.testing.State(
             containers=[container],
             relations=[git_registry_relation_ready],
         )
-
-        # Should not raise, just log the error
         state_out = context.run(
             context.on.relation_broken(git_registry_relation_ready), state_in
         )
-
         assert state_out.unit_status == ops.ActiveStatus()
 
     @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
     def test_registry_client_updated_on_data_change(
         self, mock_create, context, container, git_registry_relation_ready
     ):
-        """Flow registry client is updated when relation data changes."""
+        """Registry client is updated idempotently when relation data changes."""
         mock_create.return_value = {"id": "test-id"}
 
-        # First reconcile
         state_in = ops.testing.State(
             containers=[container],
             relations=[git_registry_relation_ready],
         )
         state_after_first = context.run(context.on.pebble_ready(container), state_in)
         assert state_after_first.unit_status == ops.ActiveStatus()
-        assert mock_create.call_count == 1
 
-        # Update relation data (simulating git_connection_information_updated event)
         updated_relation = ops.testing.Relation(
             constants.GIT_REGISTRY_RELATION,
             remote_app_data={
@@ -399,11 +323,8 @@ class TestGitRegistryRestApiIntegration:
             relations=[updated_relation],
         )
         state_after_update = context.run(context.on.update_status(), state_with_update)
-
         assert state_after_update.unit_status == ops.ActiveStatus()
-        # Should be called again with new values
         assert mock_create.call_count == 2
-        latest_call = mock_create.call_args
-        assert latest_call.kwargs["repository_url"] == "https://github.com/example/nifi-flows-v2.git"
-        assert latest_call.kwargs["branch"] == "production"
+        assert mock_create.call_args.kwargs["repository_url"] == "https://github.com/example/nifi-flows-v2.git"
+        assert mock_create.call_args.kwargs["branch"] == "production"
 

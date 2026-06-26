@@ -125,3 +125,29 @@ def booting_container(container):
             ),
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# git-registry relation fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def git_registry_relation_ready():
+    """git-registry relation with all required provider data present."""
+    return ops.testing.Relation(
+        constants.GIT_REGISTRY_RELATION,
+        remote_app_data={
+            "repository-url": "https://github.com/example/nifi-flows.git",
+            "tracking-ref": "main",
+        },
+    )
+
+
+@pytest.fixture()
+def git_registry_relation_empty():
+    """git-registry relation joined but provider data not yet written."""
+    return ops.testing.Relation(
+        constants.GIT_REGISTRY_RELATION,
+        remote_app_data={},
+    )

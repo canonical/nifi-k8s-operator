@@ -169,3 +169,48 @@ class TestFailureModes:
         with patch(target, side_effect=side_effect):
             state_out = context.run(context.on.pebble_ready(container), state)
         assert state_out.unit_status == ops.BlockedStatus(constants.MSG_CONFIG_WRITE_FAILED)
+
+
+class TestGitRegistryRelation:
+    def test_no_relation_charm_reaches_active(self, context, state, container):
+        """Charm reaches ActiveStatus when no git-registry relation is present."""
+        state_out = context.run(context.on.pebble_ready(container), state)
+        assert state_out.unit_status == ops.ActiveStatus()
+
+    def test_relation_not_ready_goes_waiting(
+        self, context, container, git_registry_relation_empty
+    ):
+        """Charm enters WaitingStatus when relation is joined but provider data is absent."""
+        state_in = ops.testing.State(
+            containers=[container],
+            relations=[git_registry_relation_empty],
+        )
+        state_out = context.run(context.on.pebble_ready(container), state_in)
+        assert state_out.unit_status == ops.WaitingStatus(constants.MSG_GIT_REGISTRY_NOT_READY)
+
+    def test_relation_ready_charm_reaches_active(
+        self, context, container, git_registry_relation_ready
+    ):
+        """Charm reaches ActiveStatus when git-registry relation is ready."""
+        state_in = ops.testing.State(
+            containers=[container],
+            relations=[git_registry_relation_ready],
+        )
+        state_out = context.run(context.on.pebble_ready(container), state_in)
+        assert state_out.unit_status == ops.ActiveStatus()
+
+    def test_relation_ready_connection_info_accessible(
+        self, context, container, git_registry_relation_ready
+    ):
+        """Git connection info is accessible from the charm when the relation is ready."""
+        state_in = ops.testing.State(
+            containers=[container],
+            relations=[git_registry_relation_ready],
+        )
+        with context(context.on.pebble_ready(container), state_in) as mgr:
+            charm = mgr.charm
+            info = charm.git_registry.get_git_connection_information()
+            assert info  # at least one relation has data
+            model = next(iter(info.values()))
+            assert model.repository_url == "https://github.com/example/nifi-flows.git"
+            assert model.tracking_ref == "main"

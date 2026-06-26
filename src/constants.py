@@ -41,3 +41,7 @@ MSG_PEBBLE_NOT_READY = "Cannot connect to workload container"
 MSG_NIFI_STARTING = "NiFi is starting"
 MSG_SERVICE_START_FAILED = "Failed to (re)start NiFi service"
 MSG_CONFIG_WRITE_FAILED = "Failed to write NiFi configuration"
+MSG_GIT_REGISTRY_NOT_READY = "Waiting for git-registry relation data"
+
+# Relation names
+GIT_REGISTRY_RELATION = "git-registry"

@@ -60,3 +60,8 @@ storage:
   provenance-repo:
     type: filesystem
     minimum-size: 20G
+
+requires:
+  git-registry:
+    interface: git
+    optional: true

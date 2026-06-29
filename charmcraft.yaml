@@ -65,3 +65,4 @@ requires:
   git-registry:
     interface: git
     optional: true
+    limit: 1

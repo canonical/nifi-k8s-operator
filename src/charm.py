@@ -10,7 +10,7 @@ import logging
 import ops
 
 import constants
-from properties_generator import NifiPropertiesGenerator
+from properties_manager import NifiPropertiesManager
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
     def __init__(self, framework: ops.Framework):
         super().__init__(framework)
         self._container = self.unit.get_container(constants.CONTAINER_NAME)
-        self._renderer = NifiPropertiesGenerator()
+        self._renderer = NifiPropertiesManager()
 
         for event in [
             self.on[constants.CONTAINER_NAME].pebble_ready,
@@ -49,6 +49,69 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         """Verify connection to the container; otherwise raise."""
         if not self._container.can_connect():
             raise ExitWithStatusError(constants.MSG_PEBBLE_NOT_READY, ops.MaintenanceStatus)
+
+    def _resolve_secret_field(self, config_key: str, field_name: str) -> str:
+        """Read a field from the Juju user secret referenced by a config option.
+
+        Args:
+            config_key: The charm config option holding the secret URI.
+            field_name: The expected field inside the secret content.
+
+        Returns:
+            The secret field value.
+
+        Raises:
+            ExitWithStatusError(BlockedStatus): If the config is unset, the
+                secret is unreadable, or the field is missing/empty.
+        """
+        secret_id = self.config.get(config_key)
+        if not secret_id:
+            raise ExitWithStatusError(constants.MSG_SENSITIVE_KEY_MISSING, ops.BlockedStatus)
+        try:
+            content = self.model.get_secret(id=secret_id).get_content()
+        except (ops.SecretNotFoundError, ops.ModelError) as e:
+            logger.exception("Failed to read '%s' secret: %s", config_key, e)
+            raise ExitWithStatusError(constants.MSG_SENSITIVE_KEY_INVALID, ops.BlockedStatus)
+
+        value = content.get(field_name, "")
+        if not value:
+            raise ExitWithStatusError(constants.MSG_SENSITIVE_KEY_INVALID, ops.BlockedStatus)
+        return value
+
+    def _get_sensitive_props_key(self) -> str:
+        """Resolve nifi.sensitive.props.key from the configured Juju user secret.
+
+        Once nifi.properties has been written to disk, the key is read from the
+        existing file rather than from the secret. This ensures the charm ignores
+        any subsequent secret updates — key rotation is a future feature and
+        changing the key while NiFi has existing flows would corrupt them.
+
+        Raises:
+            ExitWithStatusError(BlockedStatus): if the secret is unset, unreadable,
+                missing the expected field, or shorter than the minimum length
+                (applies only on first boot before the file exists on disk).
+            ExitWithStatusError(MaintenanceStatus): if nifi.properties exists but
+                cannot be read due to I/O or permission errors.
+        """
+        try:
+            existing = NifiPropertiesManager.get_nifi_property(
+                self._container, "nifi.sensitive.props.key"
+            )
+        except ops.pebble.Error as e:
+            logger.exception("Cannot read nifi.properties from workload: %s", e)
+            raise ExitWithStatusError(constants.MSG_PROPERTY_READ_ERROR, ops.MaintenanceStatus)
+
+        if existing:
+            return existing
+
+        # First boot: read from the configured Juju secret.
+        key = self._resolve_secret_field(
+            constants.SENSITIVE_PROPS_KEY_CONFIG,
+            constants.SENSITIVE_PROPS_KEY_FIELD,
+        )
+        if len(key) < constants.SENSITIVE_PROPS_KEY_MIN_LENGTH:
+            raise ExitWithStatusError(constants.MSG_SENSITIVE_KEY_TOO_SHORT, ops.BlockedStatus)
+        return key
 
     # TODO: Refactor to potentially remove this method once nifi rock is available.
     def _ensure_storage_dirs(self) -> None:
@@ -103,8 +166,11 @@ class NifiK8SOperatorCharm(ops.CharmBase):
 
         Returns True if the file was created or updated, False if unchanged.
         """
+        sensitive_props_key = self._get_sensitive_props_key()
         try:
-            rendered = self._renderer.render_nifi_properties()
+            rendered = self._renderer.render_nifi_properties(
+                sensitive_props_key=sensitive_props_key,
+            )
         except RuntimeError as e:
             logger.exception("Failed to render nifi.properties: %s", e)
             raise ExitWithStatusError(constants.MSG_CONFIG_WRITE_FAILED, ops.BlockedStatus)

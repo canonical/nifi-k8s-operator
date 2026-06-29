@@ -28,16 +28,30 @@ DATA_DIR = "/var/lib/nifi/data"
 CONTENT_REPO_DIR = "/var/lib/nifi/content_repository"
 PROVENANCE_REPO_DIR = "/var/lib/nifi/provenance_repository"
 
-# TODO: Make configurable via Juju secret (nifi.sensitive.props.key).
-# Must be at least 12 characters. 32 characters recommended.
-SENSITIVE_PROPS_KEY = "placeholder-sensitive-props-key-change-me"
-
 # TODO: Set JAVA_HOME when switching to the Canonical rock image.
 # The upstream apache/nifi image already provides JAVA_HOME via the base Eclipse Temurin image.
 # The rock will use: /usr/lib/jvm/java-21-openjdk-amd64
+
+# Juju config & secret schema
+SENSITIVE_PROPS_KEY_CONFIG = "sensitive-props-key"
+SENSITIVE_PROPS_KEY_FIELD = "sensitive-props-key"
+SENSITIVE_PROPS_KEY_MIN_LENGTH = 12
 
 # Unit status messages
 MSG_PEBBLE_NOT_READY = "Cannot connect to workload container"
 MSG_NIFI_STARTING = "NiFi is starting"
 MSG_SERVICE_START_FAILED = "Failed to (re)start NiFi service"
 MSG_CONFIG_WRITE_FAILED = "Failed to write NiFi configuration"
+MSG_SENSITIVE_KEY_MISSING = (
+    f"Missing required config '{SENSITIVE_PROPS_KEY_CONFIG}' (Juju user secret)"
+)
+MSG_SENSITIVE_KEY_INVALID = (
+    f"Cannot read '{SENSITIVE_PROPS_KEY_CONFIG}' secret; "
+    f"ensure it exists, is granted to the application, "
+    f"and exposes field '{SENSITIVE_PROPS_KEY_FIELD}'"
+)
+MSG_SENSITIVE_KEY_TOO_SHORT = (
+    f"'{SENSITIVE_PROPS_KEY_CONFIG}' must be at least "
+    f"{SENSITIVE_PROPS_KEY_MIN_LENGTH} characters long"
+)
+MSG_PROPERTY_READ_ERROR = "Failed to read nifi.properties from workload; will retry"

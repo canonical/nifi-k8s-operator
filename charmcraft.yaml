@@ -60,3 +60,20 @@ storage:
   provenance-repo:
     type: filesystem
     minimum-size: 20G
+
+config:
+  options:
+    sensitive-props-key:
+      type: secret
+      description: |
+        Juju user secret containing the NiFi sensitive properties key used to
+        encrypt passwords stored in flow definitions (nifi.sensitive.props.key).
+        The secret must expose the key in a field named "sensitive-props-key"
+        and the value must be at least 12 characters long (32 recommended).
+
+        Usage:
+          juju add-secret nifi-sensitive-key sensitive-props-key=<random-32-chars>
+          juju grant-secret nifi-sensitive-key nifi-k8s
+          juju config nifi-k8s sensitive-props-key=<secret-id>
+
+        The charm remains in BlockedStatus until this secret is configured.

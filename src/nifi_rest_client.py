@@ -33,16 +33,16 @@ _REGISTRY_CONFIGS: dict[str, tuple[str, dict[str, str]]] = {
 
 
 def _detect_registry_type(repository_url: str) -> str:
-    """Return 'github' or 'gitlab' based on the repository URL."""
+    """Return 'github' or 'gitlab' based on the repository URL.
+
+    Gitea-hosted repos default to github-compatible since Gitea implements
+    the same Git HTTP protocol used by NiFi's GitHubFlowRegistryClient.
+    """
     url_lower = repository_url.lower()
-    if "github.com" in url_lower:
-        return "github"
     if "gitlab" in url_lower:
         return "gitlab"
-    raise ValueError(
-        f"Cannot determine registry type from URL: {repository_url}. "
-        "Supported providers: GitHub, GitLab"
-    )
+    # GitHub, Gitea, and other Git-compatible hosts use the GitHub registry client
+    return "github"
 
 
 class NifiRestClient:

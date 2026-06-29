@@ -40,15 +40,16 @@ setup-gitea:
 	kubectl -n "${GITEA_NAMESPACE}" apply -f tests/integration/gitea.yaml
 	kubectl -n "${GITEA_NAMESPACE}" rollout status deployment/gitea --timeout="${GITEA_TIMEOUT}"
 
+	admin_exec() { kubectl -n "${GITEA_NAMESPACE}" exec deployment/gitea -- \
+		su git -s /bin/bash -c "gitea $*"; }
+
 	echo ">>> Creating admin user (idempotent)..."
-	if ! kubectl -n "${GITEA_NAMESPACE}" exec deployment/gitea -- \
-		gitea admin user list 2>/dev/null | awk '{print $2}' | grep -qx "${GITEA_USER}"; then
-		kubectl -n "${GITEA_NAMESPACE}" exec deployment/gitea -- \
-			gitea admin user create \
-				--username "${GITEA_USER}" \
-				--password "${GITEA_PASSWORD}" \
-				--email "${GITEA_EMAIL}" \
-				--admin --must-change-password=false
+	if ! admin_exec 'admin user list' 2>/dev/null | awk '{print $2}' | grep -qx "${GITEA_USER}"; then
+		admin_exec "admin user create \
+			--username ${GITEA_USER} \
+			--password ${GITEA_PASSWORD} \
+			--email ${GITEA_EMAIL} \
+			--admin --must-change-password=false"
 	fi
 
 	echo ">>> Creating repository ${GITEA_REPO} (idempotent)..."

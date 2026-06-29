@@ -66,3 +66,4 @@ requires:
     interface: git
     limit: 1
     optional: true
+    limit: 1

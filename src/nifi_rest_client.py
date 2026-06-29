@@ -4,32 +4,37 @@
 """NiFi REST API client for managing flow registry clients."""
 
 import logging
+from urllib.parse import urlparse
 
 import requests
 
 logger = logging.getLogger(__name__)
 
-# Registry type → (NiFi component class, property key mapping)
-_REGISTRY_CONFIGS: dict[str, tuple[str, dict[str, str]]] = {
-    "github": (
-        "org.apache.nifi.github.GitHubFlowRegistryClient",
-        {
-            "url": "github-repository-url",
-            "branch": "github-branch",
-            "username": "github-authentication-username",
-            "token": "github-authentication-token",
-        },
-    ),
-    "gitlab": (
-        "org.apache.nifi.gitlab.GitLabFlowRegistryClient",
-        {
-            "url": "gitlab-project-url",
-            "branch": "gitlab-branch",
-            "username": "gitlab-username",
-            "token": "gitlab-personal-access-token",
-        },
-    ),
-}
+
+def _parse_repo_url(repository_url: str) -> tuple[str, str, str]:
+    """Parse a git repository URL into (api_base_url, owner, repo_name).
+
+    Supports URLs like:
+      http://gitea-http:3000/nifi/nifi-flows.git
+      https://github.com/owner/repo.git
+      https://gitlab.com/group/project.git
+    """
+    parsed = urlparse(repository_url)
+    path = parsed.path.rstrip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+
+    parts = [p for p in path.split("/") if p]
+    if len(parts) < 2:
+        raise ValueError(
+            f"Cannot extract owner/repo from URL: {repository_url}. "
+            "Expected format: https://host/owner/repo[.git]"
+        )
+
+    owner = parts[-2]
+    repo_name = parts[-1]
+    api_base_url = f"{parsed.scheme}://{parsed.netloc}"
+    return api_base_url, owner, repo_name
 
 
 def _detect_registry_type(repository_url: str) -> str:
@@ -45,6 +50,38 @@ def _detect_registry_type(repository_url: str) -> str:
     return "github"
 
 
+def _build_github_properties(
+    api_base_url: str, owner: str, repo_name: str, branch: str, token: str | None
+) -> dict[str, str]:
+    """Build NiFi GitHubFlowRegistryClient properties."""
+    props: dict[str, str] = {
+        "GitHub API URL": f"{api_base_url}/api/v1/",
+        "Repository Owner": owner,
+        "Repository Name": repo_name,
+        "Default Branch": branch,
+    }
+    if token:
+        props["Authentication Type"] = "PERSONAL_ACCESS_TOKEN"
+        props["Personal Access Token"] = token
+    else:
+        props["Authentication Type"] = "NONE"
+    return props
+
+
+def _build_gitlab_properties(
+    api_base_url: str, owner: str, repo_name: str, branch: str, token: str | None
+) -> dict[str, str]:
+    """Build NiFi GitLabFlowRegistryClient properties."""
+    props: dict[str, str] = {
+        "GitLab API URL": f"{api_base_url}/api/v4/",
+        "Project Path": f"{owner}/{repo_name}",
+        "Default Branch": branch,
+    }
+    if token:
+        props["Personal Access Token"] = token
+    return props
+
+
 class NifiRestClient:
     """Thin client for NiFi's /nifi-api/controller/registry-clients endpoints."""
 
@@ -58,7 +95,6 @@ class NifiRestClient:
         name: str,
         repository_url: str,
         branch: str = "main",
-        username: str | None = None,
         token: str | None = None,
     ) -> dict:
         """Create or update a flow registry client by name.
@@ -66,12 +102,18 @@ class NifiRestClient:
         Raises requests.HTTPError on failure, ValueError for unsupported URLs.
         """
         registry_type = _detect_registry_type(repository_url)
-        component_type, keys = _REGISTRY_CONFIGS[registry_type]
+        api_base_url, owner, repo_name = _parse_repo_url(repository_url)
 
-        properties: dict[str, str] = {keys["url"]: repository_url, keys["branch"]: branch}
-        if username and token:
-            properties[keys["username"]] = username
-            properties[keys["token"]] = token
+        if registry_type == "gitlab":
+            component_type = "org.apache.nifi.gitlab.GitLabFlowRegistryClient"
+            properties = _build_gitlab_properties(
+                api_base_url, owner, repo_name, branch, token
+            )
+        else:
+            component_type = "org.apache.nifi.github.GitHubFlowRegistryClient"
+            properties = _build_github_properties(
+                api_base_url, owner, repo_name, branch, token
+            )
 
         existing = self._find_by_name(name)
         if existing:

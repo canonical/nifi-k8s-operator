@@ -72,7 +72,6 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             name=constants.FLOW_REGISTRY_CLIENT_NAME,
             repository_url=info.repository_url,
             branch=info.tracking_ref or "main",
-            username=getattr(info, "credentials_username", None),
             token=getattr(info, "credentials_personal_access_token", None),
         )
 

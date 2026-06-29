@@ -90,10 +90,17 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             ExitWithStatusError(BlockedStatus): if the secret is unset, unreadable,
                 missing the expected field, or shorter than the minimum length
                 (applies only on first boot before the file exists on disk).
+            ExitWithStatusError(MaintenanceStatus): if nifi.properties exists but
+                cannot be read due to I/O or permission errors.
         """
-        existing = NifiPropertiesManager.get_nifi_property(
-            self._container, "nifi.sensitive.props.key"
-        )
+        try:
+            existing = NifiPropertiesManager.get_nifi_property(
+                self._container, "nifi.sensitive.props.key"
+            )
+        except ops.pebble.Error as e:
+            logger.exception("Cannot read nifi.properties from workload: %s", e)
+            raise ExitWithStatusError(constants.MSG_PROPERTY_READ_ERROR, ops.MaintenanceStatus)
+
         if existing:
             return existing
 

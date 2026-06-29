@@ -5,6 +5,7 @@
 
 import logging
 
+import ops
 from jinja2 import Environment, FileSystemLoader, TemplateError
 
 import constants
@@ -55,15 +56,19 @@ class NifiPropertiesManager:
         """Read a single property value from the on-disk nifi.properties file.
 
         Returns None if the file does not exist or the property is not found.
+        Raises ops.pebble.Error if the file exists but cannot be read.
         """
+        if not container.exists(constants.NIFI_PROPERTIES_PATH):
+            return None
+
         try:
-            if not container.exists(constants.NIFI_PROPERTIES_PATH):
-                return None
             content = container.pull(constants.NIFI_PROPERTIES_PATH).read()
-            prefix = f"{property_name}="
-            for line in content.splitlines():
-                if line.startswith(prefix):
-                    return line.split("=", 1)[1]
-        except Exception:
-            logger.warning("Failed to read %s from nifi.properties", property_name)
+        except ops.pebble.Error:
+            logger.exception("Failed to read %s from nifi.properties", property_name)
+            raise
+
+        prefix = f"{property_name}="
+        for line in content.splitlines():
+            if line.startswith(prefix):
+                return line.split("=", 1)[1]
         return None

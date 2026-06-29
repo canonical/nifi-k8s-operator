@@ -23,70 +23,61 @@ setup-gitea:
 	#!/usr/bin/env bash
 	set -euo pipefail
 
-	for cmd in kubectl curl python3; do
-		if ! command -v "${cmd}" >/dev/null 2>&1; then
-			echo "Missing required command: ${cmd}" >&2
-			exit 1
-		fi
-	done
+	: "${GITEA_USER:=nifi}"
+	: "${GITEA_PASSWORD:=nifi-integration-password}"
+	: "${GITEA_EMAIL:=nifi@example.com}"
+	: "${GITEA_REPO:=nifi-flows}"
+	: "${GITEA_TIMEOUT:=180s}"
 
-	GITEA_NAMESPACE="${GITEA_NAMESPACE:-$(kubectl config view --minify --output 'jsonpath={..namespace}' 2>/dev/null || true)}"
-	GITEA_NAMESPACE="${GITEA_NAMESPACE:-default}"
-	GITEA_USER="${GITEA_USER:-nifi}"
-	GITEA_PASSWORD="${GITEA_PASSWORD:-nifi-integration-password}"
-	GITEA_EMAIL="${GITEA_EMAIL:-nifi@example.com}"
-	GITEA_REPO="${GITEA_REPO:-nifi-flows}"
-	GITEA_LOCAL_PORT="${GITEA_LOCAL_PORT:-3000}"
-	GITEA_TIMEOUT="${GITEA_TIMEOUT:-180s}"
+	ns="$(kubectl config view --minify -o 'jsonpath={..namespace}' 2>/dev/null || true)"
+	: "${GITEA_NAMESPACE:=${ns:-default}}"
 
-	kubectl get namespace "${GITEA_NAMESPACE}" >/dev/null
+	api() { kubectl -n "${GITEA_NAMESPACE}" exec deployment/gitea -- \
+		curl -fsS -u "${GITEA_USER}:${GITEA_PASSWORD}" \
+		-H 'Content-Type: application/json' "$@"; }
+
+	echo ">>> Deploying Gitea into namespace ${GITEA_NAMESPACE}..."
 	kubectl -n "${GITEA_NAMESPACE}" apply -f tests/integration/gitea.yaml
 	kubectl -n "${GITEA_NAMESPACE}" rollout status deployment/gitea --timeout="${GITEA_TIMEOUT}"
-	kubectl -n "${GITEA_NAMESPACE}" wait --for=condition=Ready pod -l app.kubernetes.io/name=gitea --timeout="${GITEA_TIMEOUT}"
 
-	if ! kubectl -n "${GITEA_NAMESPACE}" exec deployment/gitea -- gitea admin user list | awk '{print $2}' | grep -qx "${GITEA_USER}"; then
+	echo ">>> Creating admin user (idempotent)..."
+	if ! kubectl -n "${GITEA_NAMESPACE}" exec deployment/gitea -- \
+		gitea admin user list 2>/dev/null | awk '{print $2}' | grep -qx "${GITEA_USER}"; then
 		kubectl -n "${GITEA_NAMESPACE}" exec deployment/gitea -- \
 			gitea admin user create \
 				--username "${GITEA_USER}" \
 				--password "${GITEA_PASSWORD}" \
 				--email "${GITEA_EMAIL}" \
-				--admin \
-				--must-change-password=false
+				--admin --must-change-password=false
 	fi
 
-	forward_log="$(mktemp)"
-	kubectl -n "${GITEA_NAMESPACE}" port-forward svc/gitea-http "${GITEA_LOCAL_PORT}:3000" >"${forward_log}" 2>&1 &
-	forward_pid="$!"
-	trap 'kill "${forward_pid}" >/dev/null 2>&1 || true; rm -f "${forward_log}"' EXIT
-
-	for _ in {1..30}; do
-		if curl -fsS "http://127.0.0.1:${GITEA_LOCAL_PORT}/api/healthz" >/dev/null 2>&1; then
-			break
-		fi
-		sleep 1
-	done
-	curl -fsS "http://127.0.0.1:${GITEA_LOCAL_PORT}/api/healthz" >/dev/null
-
-	repo_status="$(curl -sS -o /tmp/gitea-repo-response.json -w '%{http_code}' \
-		-u "${GITEA_USER}:${GITEA_PASSWORD}" \
-		-H 'Content-Type: application/json' \
+	echo ">>> Creating repository ${GITEA_REPO} (idempotent)..."
+	api -o /dev/null -w '' \
 		-d "{\"name\":\"${GITEA_REPO}\",\"auto_init\":true,\"private\":false}" \
-		"http://127.0.0.1:${GITEA_LOCAL_PORT}/api/v1/user/repos")"
-	if [[ "${repo_status}" != "201" && "${repo_status}" != "409" ]]; then
-		cat /tmp/gitea-repo-response.json >&2
-		exit 1
-	fi
+		"http://localhost:3000/api/v1/user/repos" 2>/dev/null || true
 
+	echo ">>> Generating personal access token..."
 	token_name="nifi-integration-$(date +%s)"
-	token_response="$(curl -fsS \
-		-u "${GITEA_USER}:${GITEA_PASSWORD}" \
-		-H 'Content-Type: application/json' \
-		-d "{\"name\":\"${token_name}\"}" \
-		"http://127.0.0.1:${GITEA_LOCAL_PORT}/api/v1/users/${GITEA_USER}/tokens")"
-	token="$(python3 -c 'import json, sys; print(json.load(sys.stdin)["sha1"])' <<<"${token_response}")"
+	token="$(api -d "{\"name\":\"${token_name}\"}" \
+		"http://localhost:3000/api/v1/users/${GITEA_USER}/tokens" \
+		| grep -o '"sha1":"[^"]*"' | cut -d'"' -f4)"
 
-	echo "Gitea is ready."
-	echo "Repository URL for workloads in namespace ${GITEA_NAMESPACE}: http://gitea-http.${GITEA_NAMESPACE}.svc.cluster.local:3000/${GITEA_USER}/${GITEA_REPO}.git"
-	echo "Repository URL from this machine while port-forwarding: http://127.0.0.1:${GITEA_LOCAL_PORT}/${GITEA_USER}/${GITEA_REPO}.git"
-	echo "Username: ${GITEA_USER}"
-	echo "Personal access token: ${token}"
+	svc_url="http://gitea-http.${GITEA_NAMESPACE}.svc.cluster.local:3000/${GITEA_USER}/${GITEA_REPO}.git"
+
+	echo ""
+	echo "=== Gitea ready ==="
+	echo "In-cluster repo URL : ${svc_url}"
+	echo "Username            : ${GITEA_USER}"
+	echo "Access token        : ${token}"
+	echo ""
+	echo "To open the Gitea UI locally:"
+	echo "  kubectl -n ${GITEA_NAMESPACE} port-forward svc/gitea-http 3000:3000"
+	echo "  open http://localhost:3000  (login: ${GITEA_USER} / ${GITEA_PASSWORD})"
+	echo ""
+	echo "To configure git-integrator:"
+	echo "  juju deploy git-integrator --channel edge \\"
+	echo "    --config repo=${svc_url} \\"
+	echo "    --config auth-type=token \\"
+	echo "    --config token=${token} \\"
+	echo "    --config branch=main"
+	echo "  juju integrate nifi-k8s:git-registry git-integrator:git-integrator"

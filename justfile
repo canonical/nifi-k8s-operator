@@ -59,7 +59,7 @@ setup-gitea:
 
 	echo ">>> Generating personal access token..."
 	token_name="nifi-integration-$(date +%s)"
-	token="$(api -d "{\"name\":\"${token_name}\"}" \
+	token="$(api -d "{\"name\":\"${token_name}\",\"scopes\":[\"all\"]}" \
 		"http://localhost:3000/api/v1/users/${GITEA_USER}/tokens" \
 		| grep -o '"sha1":"[^"]*"' | cut -d'"' -f4)"
 

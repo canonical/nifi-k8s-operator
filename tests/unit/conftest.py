@@ -23,7 +23,7 @@ _NIFI_READY_LAYER = ops.pebble.Layer(
                 "level": "ready",
                 "startup": "enabled",
                 "threshold": 3,
-                "http": {"url": f"http://localhost:{constants.NIFI_PORT}/nifi"},
+                "http": {"url": f"http://localhost:{constants.NIFI_PORT}/nifi/"},
             }
         }
     }

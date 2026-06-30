@@ -65,7 +65,7 @@ class TestPebbleLayer:
         assert (check.level, check.threshold, check.http) == (
             ops.pebble.CheckLevel.READY,
             3,
-            {"url": f"http://localhost:{constants.NIFI_PORT}/nifi"},
+            {"url": f"http://localhost:{constants.NIFI_PORT}/nifi/"},
         )
 
 

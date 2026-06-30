@@ -209,7 +209,6 @@ class TestGitRegistryRelation:
             name=constants.FLOW_REGISTRY_CLIENT_NAME,
             repository_url="https://github.com/example/nifi-flows.git",
             branch="main",
-            username=None,
             token=None,
         )
 
@@ -229,7 +228,6 @@ class TestGitRegistryRelation:
             name=constants.FLOW_REGISTRY_CLIENT_NAME,
             repository_url="https://github.com/example/nifi-flows.git",
             branch="develop",
-            username="git-user",
             token="ghp_test_token_123",
         )
 
@@ -249,9 +247,21 @@ class TestGitRegistryRelation:
             name=constants.FLOW_REGISTRY_CLIENT_NAME,
             repository_url="https://gitlab.com/canonical/nifi-registry.git",
             branch="main",
-            username=None,
             token=None,
         )
+
+    @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
+    def test_connection_error_goes_maintenance(
+        self, mock_create, context, container, git_registry_relation_ready
+    ):
+        """Charm enters MaintenanceStatus when NiFi API is not yet reachable."""
+        mock_create.side_effect = requests.ConnectionError("Connection refused")
+        state_in = ops.testing.State(
+            containers=[container],
+            relations=[git_registry_relation_ready],
+        )
+        state_out = context.run(context.on.pebble_ready(container), state_in)
+        assert state_out.unit_status == ops.MaintenanceStatus(constants.MSG_NIFI_STARTING)
 
     @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
     def test_api_error_goes_blocked(

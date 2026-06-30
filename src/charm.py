@@ -72,7 +72,6 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             name=constants.FLOW_REGISTRY_CLIENT_NAME,
             repository_url=info.repository_url,
             branch=info.tracking_ref or "main",
-            username=getattr(info, "credentials_username", None),
             token=getattr(info, "credentials_personal_access_token", None),
         )
 
@@ -308,6 +307,10 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         # Relation exists and is ready - configure the registry client
         try:
             self._configure_git_registry_client()
+        except requests.ConnectionError as e:
+            logger.warning("NiFi API not reachable yet, will retry: %s", e)
+            self.unit.status = ops.MaintenanceStatus(constants.MSG_NIFI_STARTING)
+            return
         except (requests.RequestException, ValueError) as e:
             logger.exception("Failed to configure flow registry client: %s", e)
             self.unit.status = ops.BlockedStatus(constants.MSG_GIT_REGISTRY_API_ERROR)

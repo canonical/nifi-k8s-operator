@@ -8,6 +8,14 @@ import pytest
 import constants
 from charm import NifiK8SOperatorCharm
 
+# Test secret for nifi.sensitive.props.key. Exported so test files can assert
+# against the same value rendered into nifi.properties.
+SENSITIVE_KEY_VALUE = "test-sensitive-key-32-characters!"  # >= 12 chars
+
+_SENSITIVE_KEY_SECRET = ops.testing.Secret(
+    tracked_content={constants.SENSITIVE_PROPS_KEY_FIELD: SENSITIVE_KEY_VALUE},
+)
+
 
 @pytest.fixture()
 def context():
@@ -71,7 +79,42 @@ def container():
 
 @pytest.fixture()
 def state(container):
+    """Default state: container ready and sensitive-props-key secret configured."""
+    return ops.testing.State(
+        containers=[container],
+        secrets={_SENSITIVE_KEY_SECRET},
+        config={constants.SENSITIVE_PROPS_KEY_CONFIG: _SENSITIVE_KEY_SECRET.id},
+    )
+
+
+@pytest.fixture()
+def state_no_secret(container):
+    """State with container ready but no sensitive-props-key config set."""
     return ops.testing.State(containers=[container])
+
+
+@pytest.fixture()
+def state_short_key(container):
+    """State where the sensitive-props-key secret holds a key shorter than the minimum."""
+    short_secret = ops.testing.Secret(
+        tracked_content={constants.SENSITIVE_PROPS_KEY_FIELD: "short"},
+    )
+    return ops.testing.State(
+        containers=[container],
+        secrets={short_secret},
+        config={constants.SENSITIVE_PROPS_KEY_CONFIG: short_secret.id},
+    )
+
+
+@pytest.fixture()
+def state_missing_field(container):
+    """State where the secret exists but lacks the expected field name."""
+    bad_secret = ops.testing.Secret(tracked_content={"wrong-field": "x" * 32})
+    return ops.testing.State(
+        containers=[container],
+        secrets={bad_secret},
+        config={constants.SENSITIVE_PROPS_KEY_CONFIG: bad_secret.id},
+    )
 
 
 @pytest.fixture()
@@ -105,6 +148,16 @@ def running_container(container):
         layers={**container.layers, "nifi": service_layer},
         execs=container.execs,
         check_infos=container.check_infos,
+    )
+
+
+@pytest.fixture()
+def running_state(running_container):
+    """State with NiFi service already active and sensitive-props-key secret configured."""
+    return ops.testing.State(
+        containers=[running_container],
+        secrets={_SENSITIVE_KEY_SECRET},
+        config={constants.SENSITIVE_PROPS_KEY_CONFIG: _SENSITIVE_KEY_SECRET.id},
     )
 
 
@@ -150,4 +203,14 @@ def git_registry_relation_empty():
     return ops.testing.Relation(
         constants.GIT_REGISTRY_RELATION,
         remote_app_data={},
+    )
+
+
+@pytest.fixture()
+def booting_state(booting_container):
+    """State for a booting container with sensitive-props-key secret configured."""
+    return ops.testing.State(
+        containers=[booting_container],
+        secrets={_SENSITIVE_KEY_SECRET},
+        config={constants.SENSITIVE_PROPS_KEY_CONFIG: _SENSITIVE_KEY_SECRET.id},
     )

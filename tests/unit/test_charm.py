@@ -3,11 +3,15 @@
 
 """Unit tests for the NiFi K8s charm."""
 
+import dataclasses
+import pathlib
+import tempfile
 from unittest.mock import patch
 
 import ops
 import ops.testing
 import pytest
+from conftest import SENSITIVE_KEY_VALUE
 
 import constants
 
@@ -18,16 +22,16 @@ class TestReconcile:
         state_out = context.run(context.on.pebble_ready(container), state)
         assert state_out.unit_status == ops.ActiveStatus()
 
-    def test_update_status_reaches_active_when_running(self, context, running_container):
+    def test_update_status_reaches_active_when_running(self, context, running_state):
         """update_status reports ActiveStatus when the service is up and check passes."""
-        state_in = ops.testing.State(containers=[running_container])
-        state_out = context.run(context.on.update_status(), state_in)
+        state_out = context.run(context.on.update_status(), running_state)
         assert state_out.unit_status == ops.ActiveStatus()
 
-    def test_pebble_ready_maintenance_while_starting(self, context, booting_container):
+    def test_pebble_ready_maintenance_while_starting(
+        self, context, booting_state, booting_container
+    ):
         """Charm stays in MaintenanceStatus while NiFi is still booting (check DOWN)."""
-        state_in = ops.testing.State(containers=[booting_container])
-        state_out = context.run(context.on.pebble_ready(booting_container), state_in)
+        state_out = context.run(context.on.pebble_ready(booting_container), booting_state)
         assert state_out.unit_status == ops.MaintenanceStatus(constants.MSG_NIFI_STARTING)
 
     @pytest.mark.parametrize(
@@ -91,7 +95,7 @@ class TestNifiProperties:
         content = (root / constants.NIFI_PROPERTIES_PATH.lstrip("/")).read_text()
         expected = [
             f"nifi.web.http.port={constants.NIFI_PORT}",
-            f"nifi.sensitive.props.key={constants.SENSITIVE_PROPS_KEY}",
+            f"nifi.sensitive.props.key={SENSITIVE_KEY_VALUE}",
             f"nifi.database.directory={constants.DATA_DIR}/database_repository",
             f"nifi.content.repository.directory.default={constants.CONTENT_REPO_DIR}",
             f"nifi.provenance.repository.directory.default={constants.PROVENANCE_REPO_DIR}",
@@ -110,10 +114,11 @@ class TestStateManagementXml:
 
 
 class TestReconcileIdempotency:
-    def test_properties_rewritten_when_drift_detected(self, context, running_container):
+    def test_properties_rewritten_when_drift_detected(
+        self, context, running_state, running_container
+    ):
         """Second reconcile rewrites nifi.properties when on-disk content has drifted."""
-        state_in = ops.testing.State(containers=[running_container])
-        state_after_first = context.run(context.on.pebble_ready(running_container), state_in)
+        state_after_first = context.run(context.on.pebble_ready(running_container), running_state)
 
         # Simulate external drift on disk between reconciles.
         root = state_after_first.get_container(constants.CONTAINER_NAME).get_filesystem(context)
@@ -127,10 +132,11 @@ class TestReconcileIdempotency:
         assert "# tampered content" not in content
         assert f"nifi.web.http.port={constants.NIFI_PORT}" in content
 
-    def test_properties_unchanged_on_subsequent_reconcile(self, context, running_container):
+    def test_properties_unchanged_on_subsequent_reconcile(
+        self, context, running_state, running_container
+    ):
         """Second reconcile leaves nifi.properties untouched when content already matches."""
-        state_in = ops.testing.State(containers=[running_container])
-        state_after_first = context.run(context.on.pebble_ready(running_container), state_in)
+        state_after_first = context.run(context.on.pebble_ready(running_container), running_state)
 
         root = state_after_first.get_container(constants.CONTAINER_NAME).get_filesystem(context)
         props_path = root / constants.NIFI_PROPERTIES_PATH.lstrip("/")
@@ -148,11 +154,11 @@ class TestFailureModes:
         "target, side_effect",
         [
             (
-                "properties_generator.NifiPropertiesGenerator.render_nifi_properties",
+                "properties_manager.NifiPropertiesManager.render_nifi_properties",
                 RuntimeError("template error"),
             ),
             (
-                "properties_generator.NifiPropertiesGenerator.render_state_management_xml",
+                "properties_manager.NifiPropertiesManager.render_state_management_xml",
                 RuntimeError("template error"),
             ),
             (
@@ -172,41 +178,52 @@ class TestFailureModes:
 
 
 class TestGitRegistryRelation:
-    def test_no_relation_charm_reaches_active(self, context, state, container):
-        """Charm reaches ActiveStatus when no git-registry relation is present."""
-        state_out = context.run(context.on.pebble_ready(container), state)
+    @pytest.mark.parametrize(
+        "relation_fixture",
+        [None, "git_registry_relation_ready"],
+        ids=["no_relation", "relation_ready"],
+    )
+    def test_active_with_secret_regardless_of_git_relation(
+        self, request, context, state, container, relation_fixture
+    ):
+        """Charm reaches ActiveStatus when sensitive-props-key is set, with or without git-registry."""  # noqa: E501
+        if relation_fixture:
+            relation = request.getfixturevalue(relation_fixture)
+            state_in = dataclasses.replace(state, relations=frozenset([relation]))
+        else:
+            state_in = state
+        state_out = context.run(context.on.pebble_ready(container), state_in)
         assert state_out.unit_status == ops.ActiveStatus()
 
+    @pytest.mark.parametrize(
+        "relation_fixture",
+        [None, "git_registry_relation_ready"],
+        ids=["no_relation", "relation_ready"],
+    )
+    def test_blocked_without_secret_regardless_of_git_relation(
+        self, request, context, container, relation_fixture
+    ):
+        """Charm stays BlockedStatus without sensitive-props-key, with or without git-registry."""
+        relations = []
+        if relation_fixture:
+            relations = [request.getfixturevalue(relation_fixture)]
+        state_in = ops.testing.State(containers=[container], relations=relations)
+        state_out = context.run(context.on.pebble_ready(container), state_in)
+        assert state_out.unit_status == ops.BlockedStatus(constants.MSG_SENSITIVE_KEY_MISSING)
+
     def test_relation_not_ready_goes_waiting(
-        self, context, container, git_registry_relation_empty
+        self, context, state, container, git_registry_relation_empty
     ):
         """Charm enters WaitingStatus when relation is joined but provider data is absent."""
-        state_in = ops.testing.State(
-            containers=[container],
-            relations=[git_registry_relation_empty],
-        )
+        state_in = dataclasses.replace(state, relations=frozenset([git_registry_relation_empty]))
         state_out = context.run(context.on.pebble_ready(container), state_in)
         assert state_out.unit_status == ops.WaitingStatus(constants.MSG_GIT_REGISTRY_NOT_READY)
 
-    def test_relation_ready_charm_reaches_active(
-        self, context, container, git_registry_relation_ready
-    ):
-        """Charm reaches ActiveStatus when git-registry relation is ready."""
-        state_in = ops.testing.State(
-            containers=[container],
-            relations=[git_registry_relation_ready],
-        )
-        state_out = context.run(context.on.pebble_ready(container), state_in)
-        assert state_out.unit_status == ops.ActiveStatus()
-
     def test_relation_ready_connection_info_accessible(
-        self, context, container, git_registry_relation_ready
+        self, context, state, container, git_registry_relation_ready
     ):
         """Git connection info is accessible from the charm when the relation is ready."""
-        state_in = ops.testing.State(
-            containers=[container],
-            relations=[git_registry_relation_ready],
-        )
+        state_in = dataclasses.replace(state, relations=frozenset([git_registry_relation_ready]))
         with context(context.on.pebble_ready(container), state_in) as mgr:
             charm = mgr.charm
             info = charm.git_registry.get_git_connection_information()
@@ -214,3 +231,66 @@ class TestGitRegistryRelation:
             model = next(iter(info.values()))
             assert model.repository_url == "https://github.com/example/nifi-flows.git"
             assert model.tracking_ref == "main"
+
+
+class TestSensitivePropsKey:
+    @pytest.mark.parametrize(
+        "state_fixture, expected_msg",
+        [
+            ("state_no_secret", constants.MSG_SENSITIVE_KEY_MISSING),
+            ("state_short_key", constants.MSG_SENSITIVE_KEY_TOO_SHORT),
+            ("state_missing_field", constants.MSG_SENSITIVE_KEY_INVALID),
+        ],
+        ids=["no_config", "key_too_short", "field_missing"],
+    )
+    def test_invalid_secret_goes_blocked(
+        self, request, context, container, state_fixture, expected_msg
+    ):
+        """Charm enters BlockedStatus for any invalid sensitive-props-key configuration."""
+        state = request.getfixturevalue(state_fixture)
+        state_out = context.run(context.on.pebble_ready(container), state)
+        assert state_out.unit_status == ops.BlockedStatus(expected_msg)
+
+    def test_unreadable_secret_goes_blocked(self, context, state, container):
+        """Charm enters BlockedStatus when the configured secret cannot be read."""
+        with patch(
+            "ops.Model.get_secret",
+            side_effect=ops.SecretNotFoundError("secret not found"),
+        ):
+            state_out = context.run(context.on.pebble_ready(container), state)
+        assert state_out.unit_status == ops.BlockedStatus(constants.MSG_SENSITIVE_KEY_INVALID)
+
+    def test_key_unchanged_after_secret_reconfiguration(self, context, container):
+        """Reconfiguring the secret does not change the key in nifi.properties.
+
+        Key rotation is a future feature — the charm reads the key from the
+        on-disk file (simulated via Mount) and ignores any secret updates,
+        preventing NiFi from being unable to decrypt existing flows.
+        """
+        new_secret = ops.testing.Secret(
+            tracked_content={constants.SENSITIVE_PROPS_KEY_FIELD: "completely-different-new-key!"},
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conf_dir = pathlib.Path(tmpdir)
+            (conf_dir / "nifi.properties").write_text(
+                f"nifi.sensitive.props.key={SENSITIVE_KEY_VALUE}\n"
+            )
+            mounted_container = dataclasses.replace(
+                container,
+                mounts={
+                    "conf": ops.testing.Mount(
+                        location=f"{constants.NIFI_HOME}/conf",
+                        source=conf_dir,
+                    )
+                },
+            )
+            state = ops.testing.State(
+                containers=[mounted_container],
+                secrets={new_secret},
+                config={constants.SENSITIVE_PROPS_KEY_CONFIG: new_secret.id},
+            )
+            context.run(context.on.config_changed(), state)
+
+            content = (conf_dir / "nifi.properties").read_text()
+            assert f"nifi.sensitive.props.key={SENSITIVE_KEY_VALUE}" in content
+            assert "completely-different-new-key" not in content

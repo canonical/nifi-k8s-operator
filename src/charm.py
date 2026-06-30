@@ -54,7 +54,6 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         ]:
             self.framework.observe(event, self._reconcile)
 
-
     def _configure_git_registry_client(self) -> None:
         """Configure NiFi flow registry client via REST API using git-registry relation data.
 

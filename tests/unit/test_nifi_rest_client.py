@@ -77,7 +77,9 @@ class TestBuildProperties:
         assert "Personal Access Token" not in props
 
     def test_gitlab_with_token(self):
-        props = _build_gitlab_properties("https://gitlab.com", "canonical", "proj", "develop", "glpat-xyz")
+        props = _build_gitlab_properties(
+            "https://gitlab.com", "canonical", "proj", "develop", "glpat-xyz"
+        )
         assert props["GitLab API URL"] == "https://gitlab.com/api/v4/"
         assert props["Project Path"] == "canonical/proj"
         assert props["Default Branch"] == "develop"
@@ -148,7 +150,11 @@ class TestNifiRestClient:
         assert payload["component"]["properties"]["Project Path"] == "canonical/nifi-registry"
 
     def test_delete_existing_client(self, client, mock_session):
-        existing = {"id": "del-id", "revision": {"version": 1, "clientId": "c1"}, "component": {"name": "to-delete"}}
+        existing = {
+            "id": "del-id",
+            "revision": {"version": 1, "clientId": "c1"},
+            "component": {"name": "to-delete"},
+        }
         mock_session.get.return_value.json.return_value = {"registries": [existing]}
         mock_session.delete.return_value.raise_for_status = MagicMock()
 

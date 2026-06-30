@@ -232,9 +232,7 @@ class TestGitRegistryRelation:
         )
 
     @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
-    def test_relation_gitlab(
-        self, mock_create, context, container, git_registry_relation_gitlab
-    ):
+    def test_relation_gitlab(self, mock_create, context, container, git_registry_relation_gitlab):
         """Registry client works with GitLab repositories."""
         mock_create.return_value = {"id": "test-id"}
         state_in = ops.testing.State(
@@ -286,9 +284,7 @@ class TestGitRegistryRelation:
             containers=[container],
             relations=[git_registry_relation_ready],
         )
-        state_out = context.run(
-            context.on.relation_broken(git_registry_relation_ready), state_in
-        )
+        state_out = context.run(context.on.relation_broken(git_registry_relation_ready), state_in)
         assert state_out.unit_status == ops.ActiveStatus()
         mock_delete.assert_called_once_with(constants.FLOW_REGISTRY_CLIENT_NAME)
 
@@ -302,9 +298,7 @@ class TestGitRegistryRelation:
             containers=[container],
             relations=[git_registry_relation_ready],
         )
-        state_out = context.run(
-            context.on.relation_broken(git_registry_relation_ready), state_in
-        )
+        state_out = context.run(context.on.relation_broken(git_registry_relation_ready), state_in)
         assert state_out.unit_status == ops.ActiveStatus()
 
     @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
@@ -335,6 +329,8 @@ class TestGitRegistryRelation:
         state_after_update = context.run(context.on.update_status(), state_with_update)
         assert state_after_update.unit_status == ops.ActiveStatus()
         assert mock_create.call_count == 2
-        assert mock_create.call_args.kwargs["repository_url"] == "https://github.com/example/nifi-flows-v2.git"
+        assert (
+            mock_create.call_args.kwargs["repository_url"]
+            == "https://github.com/example/nifi-flows-v2.git"
+        )
         assert mock_create.call_args.kwargs["branch"] == "production"
-

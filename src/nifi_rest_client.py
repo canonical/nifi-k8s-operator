@@ -106,14 +106,10 @@ class NifiRestClient:
 
         if registry_type == "gitlab":
             component_type = "org.apache.nifi.gitlab.GitLabFlowRegistryClient"
-            properties = _build_gitlab_properties(
-                api_base_url, owner, repo_name, branch, token
-            )
+            properties = _build_gitlab_properties(api_base_url, owner, repo_name, branch, token)
         else:
             component_type = "org.apache.nifi.github.GitHubFlowRegistryClient"
-            properties = _build_github_properties(
-                api_base_url, owner, repo_name, branch, token
-            )
+            properties = _build_github_properties(api_base_url, owner, repo_name, branch, token)
 
         existing = self._find_by_name(name)
         if existing:

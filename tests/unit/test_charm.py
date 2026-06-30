@@ -11,13 +11,20 @@ from unittest.mock import patch
 import ops
 import ops.testing
 import pytest
-<<<<<<< HEAD
 import requests
-=======
-from conftest import SENSITIVE_KEY_VALUE
->>>>>>> track/2.9
+from conftest import SENSITIVE_KEY_VALUE, _SENSITIVE_KEY_SECRET
 
 import constants
+
+
+def _state_with_secret_and_relations(container, relations):
+    """Build a State with the sensitive-props-key secret and the given relations."""
+    return ops.testing.State(
+        containers=[container],
+        relations=relations,
+        secrets={_SENSITIVE_KEY_SECRET},
+        config={constants.SENSITIVE_PROPS_KEY_CONFIG: _SENSITIVE_KEY_SECRET.id},
+    )
 
 
 class TestReconcile:
@@ -182,22 +189,44 @@ class TestFailureModes:
 
 
 class TestGitRegistryRelation:
-    def test_no_relation_charm_reaches_active(self, context, container):
-        """Charm reaches ActiveStatus when no git-registry relation is present (optional)."""
-        state_in = ops.testing.State(containers=[container])
+    def test_no_relation_active_with_secret(self, context, state, container):
+        """Charm reaches ActiveStatus when no git-registry relation is present."""
+        state_out = context.run(context.on.pebble_ready(container), state)
+        assert state_out.unit_status == ops.ActiveStatus()
+
+    @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
+    def test_relation_ready_active_with_secret(
+        self, mock_create, context, state, container, git_registry_relation_ready
+    ):
+        """Charm reaches ActiveStatus when relation is ready and secret is set."""
+        mock_create.return_value = {"id": "test-id"}
+        state_in = dataclasses.replace(state, relations=frozenset([git_registry_relation_ready]))
         state_out = context.run(context.on.pebble_ready(container), state_in)
         assert state_out.unit_status == ops.ActiveStatus()
 
+    @pytest.mark.parametrize(
+        "relation_fixture",
+        [None, "git_registry_relation_ready"],
+        ids=["no_relation", "relation_ready"],
+    )
+    def test_blocked_without_secret_regardless_of_git_relation(
+        self, request, context, container, relation_fixture
+    ):
+        """Charm stays BlockedStatus without sensitive-props-key, with or without git-registry."""
+        relations = []
+        if relation_fixture:
+            relations = [request.getfixturevalue(relation_fixture)]
+        state_in = ops.testing.State(containers=[container], relations=relations)
+        state_out = context.run(context.on.pebble_ready(container), state_in)
+        assert state_out.unit_status == ops.BlockedStatus(constants.MSG_SENSITIVE_KEY_MISSING)
+
     @patch("nifi_rest_client.NifiRestClient.delete_registry_client")
     def test_relation_not_ready_goes_waiting(
-        self, mock_delete, context, container, git_registry_relation_empty
+        self, mock_delete, context, state, container, git_registry_relation_empty
     ):
         """Charm enters WaitingStatus when relation is joined but provider data is absent."""
         mock_delete.return_value = False
-        state_in = ops.testing.State(
-            containers=[container],
-            relations=[git_registry_relation_empty],
-        )
+        state_in = dataclasses.replace(state, relations=frozenset([git_registry_relation_empty]))
         state_out = context.run(context.on.pebble_ready(container), state_in)
         assert state_out.unit_status == ops.WaitingStatus(constants.MSG_GIT_REGISTRY_NOT_READY)
         mock_delete.assert_called_once()
@@ -208,10 +237,7 @@ class TestGitRegistryRelation:
     ):
         """Charm reaches ActiveStatus and configures registry client when relation is ready."""
         mock_create.return_value = {"id": "test-id"}
-        state_in = ops.testing.State(
-            containers=[container],
-            relations=[git_registry_relation_ready],
-        )
+        state_in = _state_with_secret_and_relations(container, [git_registry_relation_ready])
         state_out = context.run(context.on.pebble_ready(container), state_in)
         assert state_out.unit_status == ops.ActiveStatus()
         mock_create.assert_called_once_with(
@@ -227,9 +253,8 @@ class TestGitRegistryRelation:
     ):
         """Registry client is created with auth credentials when provided."""
         mock_create.return_value = {"id": "test-id"}
-        state_in = ops.testing.State(
-            containers=[container],
-            relations=[git_registry_relation_with_credentials],
+        state_in = _state_with_secret_and_relations(
+            container, [git_registry_relation_with_credentials]
         )
         state_out = context.run(context.on.pebble_ready(container), state_in)
         assert state_out.unit_status == ops.ActiveStatus()
@@ -244,10 +269,7 @@ class TestGitRegistryRelation:
     def test_relation_gitlab(self, mock_create, context, container, git_registry_relation_gitlab):
         """Registry client works with GitLab repositories."""
         mock_create.return_value = {"id": "test-id"}
-        state_in = ops.testing.State(
-            containers=[container],
-            relations=[git_registry_relation_gitlab],
-        )
+        state_in = _state_with_secret_and_relations(container, [git_registry_relation_gitlab])
         state_out = context.run(context.on.pebble_ready(container), state_in)
         assert state_out.unit_status == ops.ActiveStatus()
         mock_create.assert_called_once_with(
@@ -263,10 +285,7 @@ class TestGitRegistryRelation:
     ):
         """Charm enters MaintenanceStatus when NiFi API is not yet reachable."""
         mock_create.side_effect = requests.ConnectionError("Connection refused")
-        state_in = ops.testing.State(
-            containers=[container],
-            relations=[git_registry_relation_ready],
-        )
+        state_in = _state_with_secret_and_relations(container, [git_registry_relation_ready])
         state_out = context.run(context.on.pebble_ready(container), state_in)
         assert state_out.unit_status == ops.MaintenanceStatus(constants.MSG_NIFI_STARTING)
 
@@ -276,10 +295,7 @@ class TestGitRegistryRelation:
     ):
         """Charm enters BlockedStatus when REST API call fails."""
         mock_create.side_effect = requests.HTTPError("404 Not Found")
-        state_in = ops.testing.State(
-            containers=[container],
-            relations=[git_registry_relation_ready],
-        )
+        state_in = _state_with_secret_and_relations(container, [git_registry_relation_ready])
         state_out = context.run(context.on.pebble_ready(container), state_in)
         assert state_out.unit_status == ops.BlockedStatus(constants.MSG_GIT_REGISTRY_API_ERROR)
 
@@ -289,10 +305,7 @@ class TestGitRegistryRelation:
     ):
         """Registry client is deleted when relation is broken; charm stays Active."""
         mock_delete.return_value = True
-        state_in = ops.testing.State(
-            containers=[container],
-            relations=[git_registry_relation_ready],
-        )
+        state_in = _state_with_secret_and_relations(container, [git_registry_relation_ready])
         state_out = context.run(context.on.relation_broken(git_registry_relation_ready), state_in)
         assert state_out.unit_status == ops.ActiveStatus()
         mock_delete.assert_called_once_with(constants.FLOW_REGISTRY_CLIENT_NAME)
@@ -303,10 +316,7 @@ class TestGitRegistryRelation:
     ):
         """Delete failure on relation-broken is logged but doesn't crash."""
         mock_delete.side_effect = requests.HTTPError("500 Server Error")
-        state_in = ops.testing.State(
-            containers=[container],
-            relations=[git_registry_relation_ready],
-        )
+        state_in = _state_with_secret_and_relations(container, [git_registry_relation_ready])
         state_out = context.run(context.on.relation_broken(git_registry_relation_ready), state_in)
         assert state_out.unit_status == ops.ActiveStatus()
 
@@ -317,10 +327,7 @@ class TestGitRegistryRelation:
         """Registry client is updated idempotently when relation data changes."""
         mock_create.return_value = {"id": "test-id"}
 
-        state_in = ops.testing.State(
-            containers=[container],
-            relations=[git_registry_relation_ready],
-        )
+        state_in = _state_with_secret_and_relations(container, [git_registry_relation_ready])
         state_after_first = context.run(context.on.pebble_ready(container), state_in)
         assert state_after_first.unit_status == ops.ActiveStatus()
 
@@ -331,10 +338,7 @@ class TestGitRegistryRelation:
                 "tracking-ref": "production",
             },
         )
-        state_with_update = ops.testing.State(
-            containers=[container],
-            relations=[updated_relation],
-        )
+        state_with_update = _state_with_secret_and_relations(container, [updated_relation])
         state_after_update = context.run(context.on.update_status(), state_with_update)
         assert state_after_update.unit_status == ops.ActiveStatus()
         assert mock_create.call_count == 2
@@ -343,6 +347,20 @@ class TestGitRegistryRelation:
             == "https://github.com/example/nifi-flows-v2.git"
         )
         assert mock_create.call_args.kwargs["branch"] == "production"
+    def test_relation_ready_connection_info_accessible(
+        self, context, state, container, git_registry_relation_ready
+    ):
+        """Git connection info is accessible from the charm when the relation is ready."""
+        state_in = dataclasses.replace(state, relations=frozenset([git_registry_relation_ready]))
+        with context(context.on.pebble_ready(container), state_in) as mgr:
+            charm = mgr.charm
+            info = charm.git_registry.get_git_connection_information()
+            assert info  # at least one relation has data
+            model = next(iter(info.values()))
+            assert model.repository_url == "https://github.com/example/nifi-flows.git"
+            assert model.tracking_ref == "main"
+
+
 class TestSensitivePropsKey:
     @pytest.mark.parametrize(
         "state_fixture, expected_msg",

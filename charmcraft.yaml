@@ -61,6 +61,12 @@ storage:
     type: filesystem
     minimum-size: 20G
 
+requires:
+  git-registry:
+    interface: git
+    optional: true
+    limit: 1
+
 config:
   options:
     sensitive-props-key:

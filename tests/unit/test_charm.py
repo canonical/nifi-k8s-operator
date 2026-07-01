@@ -177,6 +177,62 @@ class TestFailureModes:
         assert state_out.unit_status == ops.BlockedStatus(constants.MSG_CONFIG_WRITE_FAILED)
 
 
+class TestGitRegistryRelation:
+    @pytest.mark.parametrize(
+        "relation_fixture",
+        [None, "git_registry_relation_ready"],
+        ids=["no_relation", "relation_ready"],
+    )
+    def test_active_with_secret_regardless_of_git_relation(
+        self, request, context, state, container, relation_fixture
+    ):
+        """Charm reaches ActiveStatus when sensitive-props-key is set, with or without git-registry."""  # noqa: E501
+        if relation_fixture:
+            relation = request.getfixturevalue(relation_fixture)
+            state_in = dataclasses.replace(state, relations=frozenset([relation]))
+        else:
+            state_in = state
+        state_out = context.run(context.on.pebble_ready(container), state_in)
+        assert state_out.unit_status == ops.ActiveStatus()
+
+    @pytest.mark.parametrize(
+        "relation_fixture",
+        [None, "git_registry_relation_ready"],
+        ids=["no_relation", "relation_ready"],
+    )
+    def test_blocked_without_secret_regardless_of_git_relation(
+        self, request, context, container, relation_fixture
+    ):
+        """Charm stays BlockedStatus without sensitive-props-key, with or without git-registry."""
+        relations = []
+        if relation_fixture:
+            relations = [request.getfixturevalue(relation_fixture)]
+        state_in = ops.testing.State(containers=[container], relations=relations)
+        state_out = context.run(context.on.pebble_ready(container), state_in)
+        assert state_out.unit_status == ops.BlockedStatus(constants.MSG_SENSITIVE_KEY_MISSING)
+
+    def test_relation_not_ready_goes_waiting(
+        self, context, state, container, git_registry_relation_empty
+    ):
+        """Charm enters WaitingStatus when relation is joined but provider data is absent."""
+        state_in = dataclasses.replace(state, relations=frozenset([git_registry_relation_empty]))
+        state_out = context.run(context.on.pebble_ready(container), state_in)
+        assert state_out.unit_status == ops.WaitingStatus(constants.MSG_GIT_REGISTRY_NOT_READY)
+
+    def test_relation_ready_connection_info_accessible(
+        self, context, state, container, git_registry_relation_ready
+    ):
+        """Git connection info is accessible from the charm when the relation is ready."""
+        state_in = dataclasses.replace(state, relations=frozenset([git_registry_relation_ready]))
+        with context(context.on.pebble_ready(container), state_in) as mgr:
+            charm = mgr.charm
+            info = charm.git_registry.get_git_connection_information()
+            assert info  # at least one relation has data
+            model = next(iter(info.values()))
+            assert model.repository_url == "https://github.com/example/nifi-flows.git"
+            assert model.tracking_ref == "main"
+
+
 class TestSensitivePropsKey:
     @pytest.mark.parametrize(
         "state_fixture, expected_msg",

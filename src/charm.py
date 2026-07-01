@@ -7,6 +7,7 @@
 import hashlib
 import logging
 
+import charms.git_integrator.v0.git as git
 import ops
 
 import constants
@@ -36,6 +37,11 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         super().__init__(framework)
         self._container = self.unit.get_container(constants.CONTAINER_NAME)
         self._renderer = NifiPropertiesManager()
+        self.git_registry = git.GitRequires(
+            self,
+            constants.GIT_REGISTRY_RELATION,
+            callback=self._reconcile,
+        )
 
         for event in [
             self.on[constants.CONTAINER_NAME].pebble_ready,
@@ -44,6 +50,12 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             self.on.update_status,
         ]:
             self.framework.observe(event, self._reconcile)
+
+    def _check_git_registry(self) -> None:
+        """If a git-registry relation exists but is not yet ready, raise."""
+        relations = self.git_registry.relations
+        if relations and not self.git_registry.is_ready():
+            raise ExitWithStatusError(constants.MSG_GIT_REGISTRY_NOT_READY, ops.WaitingStatus)
 
     def _check_pebble_connection(self) -> None:
         """Verify connection to the container; otherwise raise."""
@@ -290,6 +302,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         """
         try:
             self._check_pebble_connection()
+            self._check_git_registry()
             self._ensure_storage_dirs()
             was_running = self._service_is_running()
             config_changed = self._write_nifi_properties()

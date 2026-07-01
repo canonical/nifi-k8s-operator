@@ -12,7 +12,7 @@ import ops
 import ops.testing
 import pytest
 import requests
-from conftest import SENSITIVE_KEY_VALUE, _SENSITIVE_KEY_SECRET
+from conftest import _SENSITIVE_KEY_SECRET, SENSITIVE_KEY_VALUE
 
 import constants
 
@@ -347,6 +347,7 @@ class TestGitRegistryRelation:
             == "https://github.com/example/nifi-flows-v2.git"
         )
         assert mock_create.call_args.kwargs["branch"] == "production"
+
     def test_relation_ready_connection_info_accessible(
         self, context, state, container, git_registry_relation_ready
     ):

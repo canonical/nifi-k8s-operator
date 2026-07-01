@@ -231,6 +231,7 @@ def git_registry_relation_empty():
         remote_app_data={},
     )
 
+
 @pytest.fixture()
 def booting_state(booting_container):
     """State for a booting container with sensitive-props-key secret configured."""

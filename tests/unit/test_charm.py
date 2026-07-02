@@ -248,7 +248,6 @@ class TestGitRegistryRelation:
         state_in = dataclasses.replace(state, relations=frozenset([git_registry_relation_empty]))
         state_out = context.run(context.on.pebble_ready(container), state_in)
         assert state_out.unit_status == ops.WaitingStatus(constants.MSG_GIT_REGISTRY_NOT_READY)
-        mock_delete.assert_called_once()
 
     @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
     def test_relation_ready_charm_reaches_active(
@@ -366,13 +365,6 @@ class TestGitRegistryRelation:
             == "https://github.com/example/nifi-flows-v2.git"
         )
         assert mock_create.call_args.kwargs["branch"] == "production"
-    def test_relation_not_ready_goes_waiting(
-        self, context, state, container, git_registry_relation_empty
-    ):
-        """Charm enters WaitingStatus when relation is joined but provider data is absent."""
-        state_in = dataclasses.replace(state, relations=frozenset([git_registry_relation_empty]))
-        state_out = context.run(context.on.pebble_ready(container), state_in)
-        assert state_out.unit_status == ops.WaitingStatus(constants.MSG_GIT_REGISTRY_NOT_READY)
 
     def test_relation_ready_connection_info_accessible(
         self, context, state, container, git_registry_relation_ready

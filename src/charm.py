@@ -90,6 +90,11 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             client.delete_registry_client(constants.FLOW_REGISTRY_CLIENT_NAME)
         except requests.RequestException as e:
             logger.warning("Failed to delete flow registry client (best-effort): %s", e)
+    def _check_git_registry(self) -> None:
+        """If a git-registry relation exists but is not yet ready, raise."""
+        relations = self.git_registry.relations
+        if relations and not self.git_registry.is_ready():
+            raise ExitWithStatusError(constants.MSG_GIT_REGISTRY_NOT_READY, ops.WaitingStatus)
 
     def _check_pebble_connection(self) -> None:
         """Verify connection to the container; otherwise raise."""
@@ -343,6 +348,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         """
         try:
             self._check_pebble_connection()
+            self._check_git_registry()
             self._ensure_storage_dirs()
             was_running = self._service_is_running()
             config_changed = self._write_nifi_properties()

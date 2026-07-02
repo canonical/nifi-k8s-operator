@@ -54,6 +54,9 @@ GIT_REGISTRY_RELATION = "git-registry"
 
 # NiFi flow registry client
 FLOW_REGISTRY_CLIENT_NAME = "juju-git-registry"
+
+# Relation names
+GIT_REGISTRY_RELATION = "git-registry"
 MSG_SENSITIVE_KEY_MISSING = (
     f"Missing required config '{SENSITIVE_PROPS_KEY_CONFIG}' (Juju user secret)"
 )

@@ -204,6 +204,25 @@ class TestGitRegistryRelation:
         state_out = context.run(context.on.pebble_ready(container), state_in)
         assert state_out.unit_status == ops.ActiveStatus()
 
+    @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
+    @pytest.mark.parametrize(
+        "relation_fixture",
+        [None, "git_registry_relation_ready"],
+        ids=["no_relation", "relation_ready"],
+    )
+    def test_active_with_secret_regardless_of_git_relation(
+        self, mock_create, request, context, state, container, relation_fixture
+    ):
+        """Charm reaches ActiveStatus when sensitive-props-key is set, with or without git-registry."""  # noqa: E501
+        mock_create.return_value = {"id": "test-id"}
+        if relation_fixture:
+            relation = request.getfixturevalue(relation_fixture)
+            state_in = dataclasses.replace(state, relations=frozenset([relation]))
+        else:
+            state_in = state
+        state_out = context.run(context.on.pebble_ready(container), state_in)
+        assert state_out.unit_status == ops.ActiveStatus()
+
     @pytest.mark.parametrize(
         "relation_fixture",
         [None, "git_registry_relation_ready"],
@@ -347,6 +366,13 @@ class TestGitRegistryRelation:
             == "https://github.com/example/nifi-flows-v2.git"
         )
         assert mock_create.call_args.kwargs["branch"] == "production"
+    def test_relation_not_ready_goes_waiting(
+        self, context, state, container, git_registry_relation_empty
+    ):
+        """Charm enters WaitingStatus when relation is joined but provider data is absent."""
+        state_in = dataclasses.replace(state, relations=frozenset([git_registry_relation_empty]))
+        state_out = context.run(context.on.pebble_ready(container), state_in)
+        assert state_out.unit_status == ops.WaitingStatus(constants.MSG_GIT_REGISTRY_NOT_READY)
 
     def test_relation_ready_connection_info_accessible(
         self, context, state, container, git_registry_relation_ready

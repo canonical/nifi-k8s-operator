@@ -64,7 +64,7 @@ class TestDetectRegistryType:
 class TestBuildProperties:
     def test_github_with_token(self):
         props = _build_github_properties("https://github.com", "owner", "repo", "main", "tok123")
-        assert props["GitHub API URL"] == "https://github.com/api/v1/"
+        assert props["GitHub API URL"] == "https://api.github.com/"
         assert props["Repository Owner"] == "owner"
         assert props["Repository Name"] == "repo"
         assert props["Default Branch"] == "main"
@@ -73,20 +73,30 @@ class TestBuildProperties:
 
     def test_github_no_token(self):
         props = _build_github_properties("https://github.com", "owner", "repo", "main", None)
+        assert props["GitHub API URL"] == "https://api.github.com/"
         assert props["Authentication Type"] == "NONE"
         assert "Personal Access Token" not in props
+
+    def test_self_hosted_api_url(self):
+        """Self-hosted (Gitea, etc.) gets {host}/api/v1/ instead of api.github.com."""
+        props = _build_github_properties(
+            "http://gitea-http:3000", "nifi", "flows", "main", "tok"
+        )
+        assert props["GitHub API URL"] == "http://gitea-http:3000/api/v1/"
 
     def test_gitlab_with_token(self):
         props = _build_gitlab_properties(
             "https://gitlab.com", "canonical", "proj", "develop", "glpat-xyz"
         )
-        assert props["GitLab API URL"] == "https://gitlab.com/api/v4/"
-        assert props["Project Path"] == "canonical/proj"
+        assert props["GitLab API URL"] == "https://gitlab.com"
+        assert props["Repository Namespace"] == "canonical"
+        assert props["Repository Name"] == "proj"
         assert props["Default Branch"] == "develop"
         assert props["Personal Access Token"] == "glpat-xyz"
 
     def test_gitlab_no_token(self):
         props = _build_gitlab_properties("https://gitlab.com", "canonical", "proj", "main", None)
+        assert props["GitLab API URL"] == "https://gitlab.com"
         assert "Personal Access Token" not in props
 
 
@@ -147,7 +157,9 @@ class TestNifiRestClient:
 
         payload = mock_session.post.call_args[1]["json"]
         assert payload["component"]["type"] == "org.apache.nifi.gitlab.GitLabFlowRegistryClient"
-        assert payload["component"]["properties"]["Project Path"] == "canonical/nifi-registry"
+        assert payload["component"]["properties"]["Repository Namespace"] == "canonical"
+        assert payload["component"]["properties"]["Repository Name"] == "nifi-registry"
+        assert payload["component"]["properties"]["GitLab API URL"] == "https://gitlab.com"
 
     def test_delete_existing_client(self, client, mock_session):
         existing = {

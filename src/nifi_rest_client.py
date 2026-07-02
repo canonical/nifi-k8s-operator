@@ -54,8 +54,14 @@ def _build_github_properties(
     api_base_url: str, owner: str, repo_name: str, branch: str, token: str | None
 ) -> dict[str, str]:
     """Build NiFi GitHubFlowRegistryClient properties."""
+    # github.com uses https://api.github.com/; self-hosted (Gitea, etc.) use {host}/api/v1/
+    if "github.com" in api_base_url.lower():
+        api_url = "https://api.github.com/"
+    else:
+        api_url = f"{api_base_url}/api/v1/"
+
     props: dict[str, str] = {
-        "GitHub API URL": f"{api_base_url}/api/v1/",
+        "GitHub API URL": api_url,
         "Repository Owner": owner,
         "Repository Name": repo_name,
         "Default Branch": branch,
@@ -72,9 +78,12 @@ def _build_gitlab_properties(
     api_base_url: str, owner: str, repo_name: str, branch: str, token: str | None
 ) -> dict[str, str]:
     """Build NiFi GitLabFlowRegistryClient properties."""
+    # gitlab.com uses https://gitlab.com (NiFi's default); self-hosted uses the host as-is.
+    # NiFi appends /api/v4/ internally, so we just provide the base URL.
     props: dict[str, str] = {
-        "GitLab API URL": f"{api_base_url}/api/v4/",
-        "Project Path": f"{owner}/{repo_name}",
+        "GitLab API URL": api_base_url,
+        "Repository Namespace": owner,
+        "Repository Name": repo_name,
         "Default Branch": branch,
     }
     if token:

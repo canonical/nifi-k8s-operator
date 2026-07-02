@@ -60,12 +60,21 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         Raises:
             requests.RequestException: If REST API call fails
             ValueError: If repository URL is invalid
+            ExitWithStatusError(BlockedStatus): If git-integrator uses SSH auth
+                (NiFi flow registry clients only support token-based auth)
         """
         connection_info_dict = self.git_registry.get_git_connection_information()
         if not connection_info_dict:
             return
 
         info = next(iter(connection_info_dict.values()))
+
+        auth_method = getattr(info, "authentication_method", None)
+        if auth_method and str(auth_method).lower() == "ssh":
+            raise ExitWithStatusError(
+                constants.MSG_GIT_REGISTRY_SSH_UNSUPPORTED, ops.BlockedStatus
+            )
+
         client = NifiRestClient(f"http://localhost:{constants.NIFI_PORT}")
         client.create_or_update_registry_client(
             name=constants.FLOW_REGISTRY_CLIENT_NAME,
@@ -372,6 +381,9 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         # Relation exists and is ready - configure the registry client
         try:
             self._configure_git_registry_client()
+        except ExitWithStatusError as e:
+            self.unit.status = e.status
+            return
         except requests.ConnectionError as e:
             logger.warning("NiFi API not reachable yet, will retry: %s", e)
             self.unit.status = ops.MaintenanceStatus(constants.MSG_NIFI_STARTING)

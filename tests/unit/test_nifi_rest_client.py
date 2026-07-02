@@ -79,9 +79,7 @@ class TestBuildProperties:
 
     def test_self_hosted_api_url(self):
         """Self-hosted (Gitea, etc.) gets {host}/api/v1/ instead of api.github.com."""
-        props = _build_github_properties(
-            "http://gitea-http:3000", "nifi", "flows", "main", "tok"
-        )
+        props = _build_github_properties("http://gitea-http:3000", "nifi", "flows", "main", "tok")
         assert props["GitHub API URL"] == "http://gitea-http:3000/api/v1/"
 
     def test_gitlab_with_token(self):

@@ -90,6 +90,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             client.delete_registry_client(constants.FLOW_REGISTRY_CLIENT_NAME)
         except requests.RequestException as e:
             logger.warning("Failed to delete flow registry client (best-effort): %s", e)
+
     def _check_git_registry(self) -> None:
         """If a git-registry relation exists but is not yet ready, raise."""
         relations = self.git_registry.relations

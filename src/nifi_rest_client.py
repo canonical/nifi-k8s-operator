@@ -87,7 +87,10 @@ def _build_gitlab_properties(
         "Default Branch": branch,
     }
     if token:
-        props["Personal Access Token"] = token
+        props["Authentication Type"] = "ACCESS_TOKEN"
+        props["Access Token"] = token
+    else:
+        props["Authentication Type"] = "NONE"
     return props
 
 

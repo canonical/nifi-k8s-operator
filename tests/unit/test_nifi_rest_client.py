@@ -90,12 +90,14 @@ class TestBuildProperties:
         assert props["Repository Namespace"] == "canonical"
         assert props["Repository Name"] == "proj"
         assert props["Default Branch"] == "develop"
-        assert props["Personal Access Token"] == "glpat-xyz"
+        assert props["Authentication Type"] == "ACCESS_TOKEN"
+        assert props["Access Token"] == "glpat-xyz"
 
     def test_gitlab_no_token(self):
         props = _build_gitlab_properties("https://gitlab.com", "canonical", "proj", "main", None)
         assert props["GitLab API URL"] == "https://gitlab.com"
-        assert "Personal Access Token" not in props
+        assert props["Authentication Type"] == "NONE"
+        assert "Access Token" not in props
 
 
 class TestNifiRestClient:
@@ -158,6 +160,8 @@ class TestNifiRestClient:
         assert payload["component"]["properties"]["Repository Namespace"] == "canonical"
         assert payload["component"]["properties"]["Repository Name"] == "nifi-registry"
         assert payload["component"]["properties"]["GitLab API URL"] == "https://gitlab.com"
+        assert payload["component"]["properties"]["Authentication Type"] == "ACCESS_TOKEN"
+        assert payload["component"]["properties"]["Access Token"] == "glpat-tok"
 
     def test_delete_existing_client(self, client, mock_session):
         existing = {

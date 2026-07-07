@@ -31,11 +31,6 @@ clean: clean-charm
 	#!/usr/bin/env bash
 	juju destroy-model --force --destroy-storage --no-prompt "${JUJU_MODEL:-test}" || true
 
-# Pack the charm and run integration tests against a live Juju/K8s environment.
-# Requires a bootstrapped Juju controller with a Kubernetes cloud.
-# Usage:
-#   just integration              # run all integration tests
-#   just integration -k test_name # run a specific test
 integration *args: clean pack-charm
 	#!/usr/bin/env bash
 	set -euo pipefail
@@ -44,4 +39,4 @@ integration *args: clean pack-charm
 		export JUJU_MODEL=test
 	fi
 	uv sync --group integration
-	uv run tox -e integration -- --charm-path="${charm}" {{args}}
+	uv run tox -e integration -- {{args}}

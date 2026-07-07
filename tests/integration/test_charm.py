@@ -12,13 +12,12 @@ from conftest import (
     APP_NAME,
     CONTAINER_NAME,
     NIFI_IMAGE,
-    NIFI_PORT,
-    SENSITIVE_PROPS_KEY_CONFIG,
-    SENSITIVE_PROPS_KEY_FIELD,
     UNIT,
     make_sensitive_key,
     nifi_curl,
 )
+
+import constants
 
 
 def test_charm_blocked_without_sensitive_props_key(juju: jubilant.Juju, nifi_charm: pathlib.Path):
@@ -29,17 +28,17 @@ def test_charm_blocked_without_sensitive_props_key(juju: jubilant.Juju, nifi_cha
     status = juju.status()
     app_status = status.apps[APP_NAME].app_status
     assert app_status.current == "blocked"
-    assert SENSITIVE_PROPS_KEY_CONFIG in app_status.message
+    assert constants.SENSITIVE_PROPS_KEY_CONFIG in app_status.message
 
 
 def test_charm_active_with_sensitive_props_key(juju: jubilant.Juju):
     """Charm reaches ActiveStatus after sensitive-props-key Juju secret is configured."""
     secret_uri = juju.add_secret(
         "nifi-sensitive-key",
-        {SENSITIVE_PROPS_KEY_FIELD: make_sensitive_key()},
+        {constants.SENSITIVE_PROPS_KEY_FIELD: make_sensitive_key()},
     )
     juju.grant_secret("nifi-sensitive-key", APP_NAME)
-    juju.config(APP_NAME, {SENSITIVE_PROPS_KEY_CONFIG: secret_uri})
+    juju.config(APP_NAME, {constants.SENSITIVE_PROPS_KEY_CONFIG: secret_uri})
 
     juju.wait(jubilant.all_active, delay=15, timeout=600)
 
@@ -84,7 +83,7 @@ def test_nifi_create_and_list_process_group(juju: jubilant.Juju):
         f"curl -fsS --max-time 10 -X POST"
         f" -H 'Content-Type: application/json'"
         f" -d '{payload}'"
-        f" http://localhost:{NIFI_PORT}/nifi-api/process-groups/root/process-groups"
+        f" http://localhost:{constants.NIFI_PORT}/nifi-api/process-groups/root/process-groups"
     )
     create_output = juju.ssh(UNIT, cmd, container=CONTAINER_NAME)
     assert pg_name in create_output, f"Failed to create process group: {create_output}"

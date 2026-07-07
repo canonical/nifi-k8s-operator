@@ -94,10 +94,8 @@ class TestBuildProperties:
         assert props["Access Token"] == "glpat-xyz"
 
     def test_gitlab_no_token(self):
-        props = _build_gitlab_properties("https://gitlab.com", "canonical", "proj", "main", None)
-        assert props["GitLab API URL"] == "https://gitlab.com"
-        assert props["Authentication Type"] == "NONE"
-        assert "Access Token" not in props
+        with pytest.raises(ValueError, match="personal access token"):
+            _build_gitlab_properties("https://gitlab.com", "canonical", "proj", "main", None)
 
 
 class TestNifiRestClient:

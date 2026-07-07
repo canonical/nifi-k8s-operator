@@ -77,21 +77,27 @@ def _build_github_properties(
 def _build_gitlab_properties(
     api_base_url: str, owner: str, repo_name: str, branch: str, token: str | None
 ) -> dict[str, str]:
-    """Build NiFi GitLabFlowRegistryClient properties."""
+    """Build NiFi GitLabFlowRegistryClient properties.
+
+    Raises:
+        ValueError: if no token is provided. GitLab's only supported
+            authentication type is ACCESS_TOKEN — there is no anonymous mode.
+    """
+    if not token:
+        raise ValueError(
+            "GitLab flow registry clients require a personal access token; "
+            "reconfigure git-integrator with credentials (personal access token)"
+        )
     # gitlab.com uses https://gitlab.com (NiFi's default); self-hosted uses the host as-is.
     # NiFi appends /api/v4/ internally, so we just provide the base URL.
-    props: dict[str, str] = {
+    return {
         "GitLab API URL": api_base_url,
         "Repository Namespace": owner,
         "Repository Name": repo_name,
         "Default Branch": branch,
+        "Authentication Type": "ACCESS_TOKEN",
+        "Access Token": token,
     }
-    if token:
-        props["Authentication Type"] = "ACCESS_TOKEN"
-        props["Access Token"] = token
-    else:
-        props["Authentication Type"] = "NONE"
-    return props
 
 
 class NifiRestClient:

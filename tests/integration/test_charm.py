@@ -48,8 +48,11 @@ def test_charm_active_with_sensitive_props_key(juju: jubilant.Juju):
 
 def test_pebble_health_check_up(juju: jubilant.Juju):
     """The NiFi Pebble readiness check reports UP after the charm is active."""
-    output = juju.ssh(UNIT, "/charm/bin/pebble checks")
-    assert "up" in output.lower(), f"Pebble check not UP: {output}"
+    output = juju.ssh(UNIT, "/charm/bin/pebble checks --format json")
+    checks = json.loads(output)
+    assert checks, "No Pebble checks configured"
+    for check in checks:
+        assert check["status"] == "up", f"Pebble check {check['name']} not up: {check}"
 
 
 @pytest.mark.parametrize(

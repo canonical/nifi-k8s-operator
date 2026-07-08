@@ -3,8 +3,11 @@
 
 """Shared fixtures for NiFi K8s integration tests."""
 
+import os
 import pathlib
 import secrets
+import sys
+import time
 
 import jubilant
 import pytest
@@ -20,10 +23,30 @@ UNIT = f"{APP_NAME}/0"
 
 
 @pytest.fixture(scope="module")
-def juju():
-    """Provide a jubilant.Juju instance scoped to the test module."""
-    with jubilant.temp_model() as juju:
-        yield juju
+def juju(request: pytest.FixtureRequest):
+    """Create a temporary Juju model for running tests."""
+    if "JUJU_MODEL" in os.environ:
+        j = jubilant.Juju(wait_timeout=20 * 60)
+        j.add_model(
+            os.environ["JUJU_MODEL"],
+            config={"update-status-hook-interval": "10s"},
+        )
+        yield j
+
+        if request.session.testsfailed:
+            time.sleep(0.5)
+            log = j.debug_log(limit=1000)
+            print(log, end="", file=sys.stderr)
+        return
+
+    with jubilant.temp_model(config={"update-status-hook-interval": "10s"}) as j:
+        j.wait_timeout = 20 * 60
+        yield j
+
+        if request.session.testsfailed:
+            time.sleep(0.5)
+            log = j.debug_log(limit=1000)
+            print(log, end="", file=sys.stderr)
 
 
 @pytest.fixture(scope="module")

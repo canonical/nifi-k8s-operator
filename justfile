@@ -34,7 +34,6 @@ clean: clean-charm
 integration *args: clean pack-charm
 	#!/usr/bin/env bash
 	set -euo pipefail
-	charm=$(ls -t nifi-k8s_*.charm | head -n1)
 	if [ -n "{{args}}" ]; then
 		export JUJU_MODEL=test
 	fi

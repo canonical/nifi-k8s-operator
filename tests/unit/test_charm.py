@@ -11,10 +11,10 @@ from unittest.mock import patch
 import ops
 import ops.testing
 import pytest
-import requests
 from conftest import _SENSITIVE_KEY_SECRET, SENSITIVE_KEY_VALUE
 
 import constants
+from nifi_rest_client import NifiClientError
 
 
 def _state_with_secret_and_relations(container, relations):
@@ -302,7 +302,10 @@ class TestGitRegistryRelation:
         self, mock_create, context, container, git_registry_relation_ready
     ):
         """Charm enters MaintenanceStatus when NiFi API is not yet reachable."""
-        mock_create.side_effect = requests.ConnectionError("Connection refused")
+        cause = ConnectionError("Connection refused")
+        err = NifiClientError("Registry client operation failed")
+        err.__cause__ = cause
+        mock_create.side_effect = err
         state_in = _state_with_secret_and_relations(container, [git_registry_relation_ready])
         state_out = context.run(context.on.pebble_ready(container), state_in)
         assert state_out.unit_status == ops.MaintenanceStatus(constants.MSG_NIFI_STARTING)
@@ -312,7 +315,9 @@ class TestGitRegistryRelation:
         self, mock_create, context, container, git_registry_relation_ready
     ):
         """Charm enters BlockedStatus when REST API call fails."""
-        mock_create.side_effect = requests.HTTPError("404 Not Found")
+        mock_create.side_effect = NifiClientError(
+            "Registry client operation failed: 404 Not Found"
+        )
         state_in = _state_with_secret_and_relations(container, [git_registry_relation_ready])
         state_out = context.run(context.on.pebble_ready(container), state_in)
         assert state_out.unit_status == ops.BlockedStatus(constants.MSG_GIT_REGISTRY_API_ERROR)
@@ -333,7 +338,9 @@ class TestGitRegistryRelation:
         self, mock_delete, context, container, git_registry_relation_ready
     ):
         """Delete failure on relation-broken is logged but doesn't crash."""
-        mock_delete.side_effect = requests.HTTPError("500 Server Error")
+        mock_delete.side_effect = NifiClientError(
+            "Registry client delete failed: 500 Server Error"
+        )
         state_in = _state_with_secret_and_relations(container, [git_registry_relation_ready])
         state_out = context.run(context.on.relation_broken(git_registry_relation_ready), state_in)
         assert state_out.unit_status == ops.ActiveStatus()

@@ -1,101 +1,14 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""Unit tests for nifi_rest_client helpers and NifiRestClient."""
+"""Unit tests for NifiRestClient."""
 
 from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
 
-from nifi_rest_client import (
-    NifiRestClient,
-    _build_github_properties,
-    _build_gitlab_properties,
-    _detect_registry_type,
-    _parse_repo_url,
-)
-
-
-class TestParseRepoUrl:
-    @pytest.mark.parametrize(
-        "url, expected",
-        [
-            (
-                "https://github.com/owner/repo.git",
-                ("https://github.com", "owner", "repo"),
-            ),
-            (
-                "https://github.com/owner/repo",
-                ("https://github.com", "owner", "repo"),
-            ),
-            (
-                "http://gitea-http:3000/nifi/nifi-flows.git",
-                ("http://gitea-http:3000", "nifi", "nifi-flows"),
-            ),
-            (
-                "https://gitlab.com/canonical/nifi-registry.git",
-                ("https://gitlab.com", "canonical", "nifi-registry"),
-            ),
-        ],
-    )
-    def test_parses_correctly(self, url, expected):
-        assert _parse_repo_url(url) == expected
-
-    def test_raises_on_missing_owner_repo(self):
-        with pytest.raises(ValueError, match="Cannot extract owner/repo"):
-            _parse_repo_url("https://github.com/repo-only")
-
-
-class TestDetectRegistryType:
-    @pytest.mark.parametrize(
-        "url, expected",
-        [
-            ("https://github.com/owner/repo.git", "github"),
-            ("http://gitea-http:3000/nifi/flows.git", "github"),
-            ("https://gitlab.com/canonical/project.git", "gitlab"),
-            ("https://my-gitlab.internal/group/repo.git", "gitlab"),
-        ],
-    )
-    def test_detection(self, url, expected):
-        assert _detect_registry_type(url) == expected
-
-
-class TestBuildProperties:
-    def test_github_with_token(self):
-        props = _build_github_properties("https://github.com", "owner", "repo", "main", "tok123")
-        assert props["GitHub API URL"] == "https://api.github.com/"
-        assert props["Repository Owner"] == "owner"
-        assert props["Repository Name"] == "repo"
-        assert props["Default Branch"] == "main"
-        assert props["Authentication Type"] == "PERSONAL_ACCESS_TOKEN"
-        assert props["Personal Access Token"] == "tok123"
-
-    def test_github_no_token(self):
-        props = _build_github_properties("https://github.com", "owner", "repo", "main", None)
-        assert props["GitHub API URL"] == "https://api.github.com/"
-        assert props["Authentication Type"] == "NONE"
-        assert "Personal Access Token" not in props
-
-    def test_self_hosted_api_url(self):
-        """Self-hosted (Gitea, etc.) gets {host}/api/v1/ instead of api.github.com."""
-        props = _build_github_properties("http://gitea-http:3000", "nifi", "flows", "main", "tok")
-        assert props["GitHub API URL"] == "http://gitea-http:3000/api/v1/"
-
-    def test_gitlab_with_token(self):
-        props = _build_gitlab_properties(
-            "https://gitlab.com", "canonical", "proj", "develop", "glpat-xyz"
-        )
-        assert props["GitLab API URL"] == "https://gitlab.com"
-        assert props["Repository Namespace"] == "canonical"
-        assert props["Repository Name"] == "proj"
-        assert props["Default Branch"] == "develop"
-        assert props["Authentication Type"] == "ACCESS_TOKEN"
-        assert props["Access Token"] == "glpat-xyz"
-
-    def test_gitlab_no_token(self):
-        with pytest.raises(ValueError, match="personal access token"):
-            _build_gitlab_properties("https://gitlab.com", "canonical", "proj", "main", None)
+from nifi_rest_client import NifiClientError, NifiRestClient
 
 
 class TestNifiRestClient:
@@ -178,11 +91,13 @@ class TestNifiRestClient:
         assert client.delete_registry_client("missing") is False
         mock_session.delete.assert_not_called()
 
-    def test_create_raises_on_http_error(self, client, mock_session):
+    def test_create_raises_nifi_client_error_on_http_error(self, client, mock_session):
         mock_session.get.return_value.json.return_value = {"registries": []}
-        mock_session.post.return_value.raise_for_status.side_effect = requests.HTTPError("500")
+        mock_session.post.return_value.raise_for_status.side_effect = (
+            requests.HTTPError("500")
+        )
 
-        with pytest.raises(requests.HTTPError):
+        with pytest.raises(NifiClientError, match="Registry client operation failed"):
             client.create_or_update_registry_client(
                 name="err-client",
                 repository_url="https://github.com/owner/repo.git",

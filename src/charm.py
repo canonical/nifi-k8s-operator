@@ -9,10 +9,9 @@ import logging
 
 import charms.git_integrator.v0.git as git
 import ops
-import requests
 
 import constants
-from nifi_rest_client import NifiRestClient
+from nifi_rest_client import NifiClientError, NifiRestClient
 from properties_manager import NifiPropertiesManager
 
 logger = logging.getLogger(__name__)
@@ -39,6 +38,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         super().__init__(framework)
         self._container = self.unit.get_container(constants.CONTAINER_NAME)
         self._renderer = NifiPropertiesManager()
+        self._nifi_client = NifiRestClient(f"http://localhost:{constants.NIFI_PORT}")
         self.git_registry = git.GitRequires(
             self,
             constants.GIT_REGISTRY_RELATION,
@@ -58,8 +58,8 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         """Configure NiFi flow registry client via REST API using git-registry relation data.
 
         Raises:
-            requests.RequestException: If REST API call fails
-            ValueError: If repository URL is invalid
+            NifiClientError: If REST API call fails.
+            ValueError: If repository URL is invalid.
             ExitWithStatusError(BlockedStatus): If git-integrator uses SSH auth
                 (NiFi flow registry clients only support token-based auth)
         """
@@ -75,8 +75,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
                 constants.MSG_GIT_REGISTRY_SSH_UNSUPPORTED, ops.BlockedStatus
             )
 
-        client = NifiRestClient(f"http://localhost:{constants.NIFI_PORT}")
-        client.create_or_update_registry_client(
+        self._nifi_client.create_or_update_registry_client(
             name=constants.FLOW_REGISTRY_CLIENT_NAME,
             repository_url=info.repository_url,
             branch=info.tracking_ref or "main",
@@ -86,9 +85,8 @@ class NifiK8SOperatorCharm(ops.CharmBase):
     def _delete_git_registry_client(self) -> None:
         """Delete NiFi flow registry client via REST API. Best-effort."""
         try:
-            client = NifiRestClient(f"http://localhost:{constants.NIFI_PORT}")
-            client.delete_registry_client(constants.FLOW_REGISTRY_CLIENT_NAME)
-        except requests.RequestException as e:
+            self._nifi_client.delete_registry_client(constants.FLOW_REGISTRY_CLIENT_NAME)
+        except NifiClientError as e:
             logger.warning("Failed to delete flow registry client (best-effort): %s", e)
 
     def _check_git_registry(self) -> None:
@@ -391,11 +389,15 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         except ExitWithStatusError as e:
             self.unit.status = e.status
             return
-        except requests.ConnectionError as e:
-            logger.warning("NiFi API not reachable yet, will retry: %s", e)
-            self.unit.status = ops.MaintenanceStatus(constants.MSG_NIFI_STARTING)
+        except NifiClientError as e:
+            if isinstance(e.__cause__, OSError):
+                logger.warning("NiFi API not reachable yet, will retry: %s", e)
+                self.unit.status = ops.MaintenanceStatus(constants.MSG_NIFI_STARTING)
+            else:
+                logger.exception("Failed to configure flow registry client: %s", e)
+                self.unit.status = ops.BlockedStatus(constants.MSG_GIT_REGISTRY_API_ERROR)
             return
-        except (requests.RequestException, ValueError) as e:
+        except ValueError as e:
             logger.exception("Failed to configure flow registry client: %s", e)
             self.unit.status = ops.BlockedStatus(constants.MSG_GIT_REGISTRY_API_ERROR)
             return

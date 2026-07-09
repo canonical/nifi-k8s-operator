@@ -10,7 +10,6 @@ import jubilant
 import pytest
 from conftest import (
     APP_NAME,
-    CONTAINER_NAME,
     NIFI_IMAGE,
     UNIT,
     make_sensitive_key,
@@ -48,7 +47,7 @@ def test_charm_active_with_sensitive_props_key(juju: jubilant.Juju):
 
 def test_pebble_health_check_up(juju: jubilant.Juju):
     """The NiFi Pebble readiness check reports UP after the charm is active."""
-    output = juju.ssh(UNIT, "/charm/bin/pebble checks")
+    output = juju.ssh(UNIT, "/charm/bin/pebble checks", container=constants.CONTAINER_NAME)
     lines = [line.split() for line in output.strip().splitlines()[1:] if line.strip()]
     assert lines, f"No Pebble checks found in output: {output}"
     for cols in lines:
@@ -68,7 +67,8 @@ def test_pebble_health_check_up(juju: jubilant.Juju):
 def test_nifi_api_endpoint(juju: jubilant.Juju, api_path: str, expected_key: str):
     """NiFi REST API endpoints return expected JSON keys."""
     output = nifi_curl(juju, api_path)
-    assert expected_key in output, (
+    data = json.loads(output)
+    assert expected_key in data, (
         f"Expected '{expected_key}' in {api_path} response: {output[:500]}"
     )
 
@@ -89,8 +89,11 @@ def test_nifi_create_and_list_process_group(juju: jubilant.Juju):
         f" -d '{payload}'"
         f" http://localhost:{constants.NIFI_PORT}/nifi-api/process-groups/root/process-groups"
     )
-    create_output = juju.ssh(UNIT, cmd, container=CONTAINER_NAME)
+    create_output = juju.ssh(UNIT, cmd, container=constants.CONTAINER_NAME)
     assert pg_name in create_output, f"Failed to create process group: {create_output}"
 
     list_output = nifi_curl(juju, "/nifi-api/process-groups/root/process-groups")
-    assert pg_name in list_output
+    group_names = [
+        pg["component"]["name"] for pg in json.loads(list_output).get("processGroups", [])
+    ]
+    assert pg_name in group_names, f"Process group not found: {group_names}"

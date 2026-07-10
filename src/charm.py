@@ -89,10 +89,34 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         except NifiClientError as e:
             logger.warning("Failed to delete flow registry client (best-effort): %s", e)
 
+    def _reconcile_git_registry(self) -> None:
+        """Reconcile git-registry: configure registry client if relation is ready, else clean up.
+
+        Raises:
+            ExitWithStatusError(BlockedStatus): If SSH auth is configured or API call fails.
+            ExitWithStatusError(MaintenanceStatus): If NiFi API is not yet reachable.
+        """
+        if not self.git_registry.relations:
+            # No relation - clean up any existing registry client (best-effort)
+            self._delete_git_registry_client()
+            return
+
+        # Relation exists and is ready (guaranteed by _check_git_registry in reconcile).
+        try:
+            self._configure_git_registry_client()
+        except NifiClientError as e:
+            if isinstance(e.__cause__, OSError):
+                logger.warning("NiFi API not reachable yet, will retry: %s", e)
+                raise ExitWithStatusError(constants.MSG_NIFI_STARTING, ops.MaintenanceStatus)
+            logger.exception("Failed to configure flow registry client: %s", e)
+            raise ExitWithStatusError(constants.MSG_GIT_REGISTRY_API_ERROR, ops.BlockedStatus)
+        except ValueError as e:
+            logger.exception("Failed to configure flow registry client: %s", e)
+            raise ExitWithStatusError(constants.MSG_GIT_REGISTRY_API_ERROR, ops.BlockedStatus)
+
     def _check_git_registry(self) -> None:
         """If a git-registry relation exists but is not yet ready, raise."""
-        relations = self.git_registry.relations
-        if relations and not self.git_registry.is_ready():
+        if self.git_registry.relations and not self.git_registry.is_ready():
             raise ExitWithStatusError(constants.MSG_GIT_REGISTRY_NOT_READY, ops.WaitingStatus)
 
     def _check_pebble_connection(self) -> None:
@@ -371,35 +395,10 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             self.unit.status = ops.MaintenanceStatus(constants.MSG_NIFI_STARTING)
             return
 
-        # NiFi is up — now reconcile the git-registry relation state.
-        if not self.git_registry.relations or not self.git_registry.is_ready():
-            # No relation or not ready: clean up any existing registry client
-            self._delete_git_registry_client()
-            if self.git_registry.relations and not self.git_registry.is_ready():
-                # Relation joined but not ready yet
-                self.unit.status = ops.WaitingStatus(constants.MSG_GIT_REGISTRY_NOT_READY)
-                return
-            # No relation - that's fine, git-registry is optional
-            self.unit.status = ops.ActiveStatus()
-            return
-
-        # Relation exists and is ready - configure the registry client
         try:
-            self._configure_git_registry_client()
+            self._reconcile_git_registry()
         except ExitWithStatusError as e:
             self.unit.status = e.status
-            return
-        except NifiClientError as e:
-            if isinstance(e.__cause__, OSError):
-                logger.warning("NiFi API not reachable yet, will retry: %s", e)
-                self.unit.status = ops.MaintenanceStatus(constants.MSG_NIFI_STARTING)
-            else:
-                logger.exception("Failed to configure flow registry client: %s", e)
-                self.unit.status = ops.BlockedStatus(constants.MSG_GIT_REGISTRY_API_ERROR)
-            return
-        except ValueError as e:
-            logger.exception("Failed to configure flow registry client: %s", e)
-            self.unit.status = ops.BlockedStatus(constants.MSG_GIT_REGISTRY_API_ERROR)
             return
 
         self.unit.status = ops.ActiveStatus()

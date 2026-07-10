@@ -93,9 +93,7 @@ class TestNifiRestClient:
 
     def test_create_raises_nifi_client_error_on_http_error(self, client, mock_session):
         mock_session.get.return_value.json.return_value = {"registries": []}
-        mock_session.post.return_value.raise_for_status.side_effect = (
-            requests.HTTPError("500")
-        )
+        mock_session.post.return_value.raise_for_status.side_effect = requests.HTTPError("500")
 
         with pytest.raises(NifiClientError, match="Registry client operation failed"):
             client.create_or_update_registry_client(

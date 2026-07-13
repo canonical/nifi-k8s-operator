@@ -6,7 +6,10 @@
 import logging
 from urllib.parse import urlsplit
 
-import requests
+import nipyapi
+from nipyapi.nifi.apis import ControllerApi
+from nipyapi.nifi.models import FlowRegistryClientDTO, FlowRegistryClientEntity, RevisionDTO
+from nipyapi.nifi.rest import ApiException
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +26,9 @@ class NifiRestClient:
     """Thin client for NiFi's /nifi-api/controller/registry-clients endpoints."""
 
     def __init__(self, base_url: str, timeout: int = 30):
-        self._api = f"{base_url.rstrip('/')}/nifi-api/controller/registry-clients"
-        self._timeout = timeout
-        self._session = requests.Session()
+        nipyapi.config.nifi_config.host = f"{base_url.rstrip('/')}/nifi-api"
+        nipyapi.config.nifi_config.connection_timeout = timeout
+        self._controller = ControllerApi()
 
     def create_or_update_registry_client(
         self,
@@ -41,8 +44,6 @@ class NifiRestClient:
             ValueError: if the repository URL cannot be parsed or GitLab is
                 configured without a token.
         """
-        # Parse URL using urlsplit to determine registry type, api_base_url,
-        # owner, and repo_name.
         parsed = urlsplit(repository_url)
         path = parsed.path.rstrip("/").removesuffix(".git")
         parts = [p for p in path.split("/") if p]
@@ -63,7 +64,6 @@ class NifiRestClient:
                     "reconfigure git-integrator with credentials (personal access token)"
                 )
             component_type = "org.apache.nifi.gitlab.GitLabFlowRegistryClient"
-            # NiFi appends /api/v4/ internally — provide the base URL only.
             properties: dict[str, str] = {
                 "GitLab API URL": api_base_url,
                 "Repository Namespace": owner,
@@ -74,8 +74,6 @@ class NifiRestClient:
             }
         else:
             component_type = "org.apache.nifi.github.GitHubFlowRegistryClient"
-            # github.com uses https://api.github.com/; self-hosted (Gitea, etc.)
-            # uses {host}/api/v1/.
             api_url = (
                 "https://api.github.com/"
                 if "github.com" in api_base_url.lower()
@@ -95,40 +93,27 @@ class NifiRestClient:
 
         try:
             existing = self._find_by_name(name)
+            component = FlowRegistryClientDTO(
+                name=name, type=component_type, properties=properties
+            )
             if existing:
-                version = existing.get("revision", {}).get("version", 0)
-                client_id = existing["id"]
-                component: dict = {
-                    "id": client_id,
-                    "name": name,
-                    "type": component_type,
-                    "properties": properties,
-                }
-                logger.info("Updating registry client %s (id=%s)", name, client_id)
-                resp = self._session.put(
-                    f"{self._api}/{client_id}",
-                    json={"revision": {"version": version}, "component": component},
-                    timeout=self._timeout,
+                component.id = existing.id
+                logger.info("Updating registry client %s (id=%s)", name, existing.id)
+                result = self._controller.update_flow_registry_client(
+                    body=FlowRegistryClientEntity(revision=existing.revision, component=component),
+                    id=existing.id,
                 )
             else:
                 logger.info("Creating registry client %s", name)
-                resp = self._session.post(
-                    self._api,
-                    json={
-                        "revision": {"version": 0},
-                        "component": {
-                            "name": name,
-                            "type": component_type,
-                            "properties": properties,
-                        },
-                    },
-                    timeout=self._timeout,
+                result = self._controller.create_flow_registry_client(
+                    body=FlowRegistryClientEntity(
+                        revision=RevisionDTO(version=0), component=component
+                    ),
                 )
-            resp.raise_for_status()
-            return resp.json()
-        except requests.ConnectionError as e:
-            raise NifiConnectionError(f"NiFi API not reachable: {e}") from e
-        except requests.RequestException as e:
+            return result.to_dict()
+        except ApiException as e:
+            if e.status in (0, 503):
+                raise NifiConnectionError(f"NiFi API not reachable: {e}") from e
             raise NifiClientError(f"Registry client operation failed: {e}") from e
 
     def delete_registry_client(self, name: str) -> bool:
@@ -138,29 +123,21 @@ class NifiRestClient:
             if not existing:
                 return False
 
-            rev = existing.get("revision", {})
-            params = {
-                "version": rev.get("version", 0),
-                "clientId": rev.get("clientId", ""),
-            }
-            logger.info("Deleting registry client %s (id=%s)", name, existing["id"])
-            self._session.delete(
-                f"{self._api}/{existing['id']}", params=params, timeout=self._timeout
-            ).raise_for_status()
+            logger.info("Deleting registry client %s (id=%s)", name, existing.id)
+            self._controller.delete_flow_registry_client(
+                id=existing.id,
+                version=existing.revision.version if existing.revision else 0,
+            )
             return True
-        except requests.ConnectionError as e:
-            raise NifiConnectionError(f"NiFi API not reachable: {e}") from e
-        except requests.RequestException as e:
+        except ApiException as e:
+            if e.status in (0, 503):
+                raise NifiConnectionError(f"NiFi API not reachable: {e}") from e
             raise NifiClientError(f"Registry client delete failed: {e}") from e
 
-    def _find_by_name(self, name: str) -> dict | None:
-        resp = self._session.get(self._api, timeout=self._timeout)
-        resp.raise_for_status()
+    def _find_by_name(self, name: str):
+        result = self._controller.get_flow_registry_clients()
+        registries = (result.registries or []) if result else []
         return next(
-            (
-                c
-                for c in resp.json().get("registries", [])
-                if c.get("component", {}).get("name") == name
-            ),
+            (c for c in registries if c.component and c.component.name == name),
             None,
         )

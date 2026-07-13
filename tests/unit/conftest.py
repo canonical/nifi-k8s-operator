@@ -247,6 +247,10 @@ def booting_state(booting_container):
 @pytest.fixture(autouse=True)
 def _block_http(monkeypatch):
     """Prevent accidental real HTTP calls in unit tests."""
-    with patch("requests.Session") as mock_session_cls:
+    with (
+        patch("requests.Session") as mock_session_cls,
+        patch("nifi_rest_client.ControllerApi") as mock_controller_cls,
+    ):
         mock_session_cls.return_value = MagicMock()
+        mock_controller_cls.return_value = MagicMock()
         yield

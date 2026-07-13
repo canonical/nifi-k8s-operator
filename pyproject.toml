@@ -8,6 +8,7 @@ dependencies = [
     "Jinja2>=3.1",
     "pydantic>=2",
     "requests>=2.32",
+    "nipyapi>=1.5.1",
 ]
 
 [dependency-groups]

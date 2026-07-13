@@ -97,11 +97,9 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             ExitWithStatusError(MaintenanceStatus): If NiFi API is not yet reachable.
         """
         if not self.git_registry.relations:
-            # No relation - clean up any existing registry client (best-effort)
             self._delete_git_registry_client()
             return
 
-        # Relation exists and is ready (guaranteed by _check_git_registry in reconcile).
         try:
             self._configure_git_registry_client()
         except NifiConnectionError as e:
@@ -177,8 +175,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
 
         if existing:
             return existing
-
-        # First boot: read from the configured Juju secret.
+        
         key = self._resolve_secret_field(
             constants.SENSITIVE_PROPS_KEY_CONFIG,
             constants.SENSITIVE_PROPS_KEY_FIELD,
@@ -213,9 +210,6 @@ class NifiK8SOperatorCharm(ops.CharmBase):
                         make_parents=True,
                     )
 
-            # Juju storage mount points are owned by root; chown only when necessary.
-            # Check the mount roots non-recursively first to avoid an expensive
-            # recursive chown on every reconcile.
             needs_chown = any(
                 self._container.exec(["stat", "-c", "%U:%G", root]).wait_output()[0].strip()
                 != expected_owner
@@ -355,6 +349,14 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             logger.exception("Pebble (re)start failed: %s", e)
             raise ExitWithStatusError(constants.MSG_SERVICE_START_FAILED, ops.BlockedStatus)
 
+    def _check_nifi_ready(self) -> None:
+        """Verify NiFi HTTP endpoint is UP; raise if still starting."""
+        check = self._container.get_checks(constants.READY_CHECK_NAME).get(
+            constants.READY_CHECK_NAME
+        )
+        if not (check and check.status == ops.pebble.CheckStatus.UP):
+            raise ExitWithStatusError(constants.MSG_NIFI_STARTING, ops.MaintenanceStatus)
+
     def _reconcile(self, _) -> None:
         """Idempotent reconcile handler for all charm events.
 
@@ -362,11 +364,11 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         world state and converges to the correct unit status:
 
         1. Verify container connectivity.
-        2. Ensure storage directories exist.
-        3. Render and push nifi.properties and state-management.xml.
-        4. Apply pebble layer and (re)start the service as needed.
-        5. Wait for NiFi to become ready.
-        6. Check git-registry relation (required).
+        2. Check git-registry relation readiness.
+        3. Ensure storage directories exist.
+        4. Render and push nifi.properties and state-management.xml.
+        5. Apply pebble layer and (re)start the service as needed.
+        6. Wait for NiFi to become ready.
         7. Configure or clean up the flow registry client via REST API.
         """
         try:
@@ -377,25 +379,8 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             config_changed = self._write_nifi_properties()
             self._write_state_management_xml()
 
-            # On first boot, replan starts the service (startup: enabled).
-            # On subsequent reconciles with config changes, restart is required
-            # because NiFi reads nifi.properties only at startup.
             self._add_layer_and_replan(restart=config_changed and was_running)
-
-        except ExitWithStatusError as e:
-            self.unit.status = e.status
-            return
-
-        # Gate on the Pebble HTTP check so we don't call the NiFi API
-        # while NiFi is still booting.
-        check = self._container.get_checks(constants.READY_CHECK_NAME).get(
-            constants.READY_CHECK_NAME
-        )
-        if not (check and check.status == ops.pebble.CheckStatus.UP):
-            self.unit.status = ops.MaintenanceStatus(constants.MSG_NIFI_STARTING)
-            return
-
-        try:
+            self._check_nifi_ready()
             self._reconcile_git_registry()
         except ExitWithStatusError as e:
             self.unit.status = e.status

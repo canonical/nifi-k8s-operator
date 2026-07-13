@@ -175,7 +175,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
 
         if existing:
             return existing
-        
+
         key = self._resolve_secret_field(
             constants.SENSITIVE_PROPS_KEY_CONFIG,
             constants.SENSITIVE_PROPS_KEY_FIELD,

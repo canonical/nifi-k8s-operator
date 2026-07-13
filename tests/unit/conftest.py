@@ -1,6 +1,8 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
+from unittest.mock import MagicMock, patch
+
 import ops
 import ops.testing
 import pytest
@@ -240,3 +242,11 @@ def booting_state(booting_container):
         secrets={_SENSITIVE_KEY_SECRET},
         config={constants.SENSITIVE_PROPS_KEY_CONFIG: _SENSITIVE_KEY_SECRET.id},
     )
+
+
+@pytest.fixture(autouse=True)
+def _block_http(monkeypatch):
+    """Prevent accidental real HTTP calls in unit tests."""
+    with patch("requests.Session") as mock_session_cls:
+        mock_session_cls.return_value = MagicMock()
+        yield

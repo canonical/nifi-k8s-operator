@@ -11,7 +11,7 @@ import charms.git_integrator.v0.git as git
 import ops
 
 import constants
-from nifi_rest_client import NifiClientError, NifiRestClient
+from nifi_rest_client import NifiClientError, NifiConnectionError, NifiRestClient
 from properties_manager import NifiPropertiesManager
 
 logger = logging.getLogger(__name__)
@@ -104,15 +104,15 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         # Relation exists and is ready (guaranteed by _check_git_registry in reconcile).
         try:
             self._configure_git_registry_client()
+        except NifiConnectionError as e:
+            logger.warning("NiFi API not reachable yet, Juju will retry on next hook: %s", e)
+            raise ExitWithStatusError(constants.MSG_NIFI_STARTING, ops.MaintenanceStatus)
         except NifiClientError as e:
-            if isinstance(e.__cause__, OSError):
-                logger.warning("NiFi API not reachable yet, will retry: %s", e)
-                raise ExitWithStatusError(constants.MSG_NIFI_STARTING, ops.MaintenanceStatus)
             logger.exception("Failed to configure flow registry client: %s", e)
             raise ExitWithStatusError(constants.MSG_GIT_REGISTRY_API_ERROR, ops.BlockedStatus)
         except ValueError as e:
             logger.exception("Failed to configure flow registry client: %s", e)
-            raise ExitWithStatusError(constants.MSG_GIT_REGISTRY_API_ERROR, ops.BlockedStatus)
+            raise ExitWithStatusError(str(e), ops.BlockedStatus)
 
     def _check_git_registry(self) -> None:
         """If a git-registry relation exists but is not yet ready, raise."""

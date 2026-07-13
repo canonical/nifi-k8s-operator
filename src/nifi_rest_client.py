@@ -15,6 +15,10 @@ class NifiClientError(Exception):
     """Raised when NiFi REST API operations fail."""
 
 
+class NifiConnectionError(NifiClientError):
+    """Raised when the NiFi API is not reachable (transient — safe to retry)."""
+
+
 class NifiRestClient:
     """Thin client for NiFi's /nifi-api/controller/registry-clients endpoints."""
 
@@ -122,6 +126,8 @@ class NifiRestClient:
                 )
             resp.raise_for_status()
             return resp.json()
+        except requests.ConnectionError as e:
+            raise NifiConnectionError(f"NiFi API not reachable: {e}") from e
         except requests.RequestException as e:
             raise NifiClientError(f"Registry client operation failed: {e}") from e
 
@@ -142,6 +148,8 @@ class NifiRestClient:
                 f"{self._api}/{existing['id']}", params=params, timeout=self._timeout
             ).raise_for_status()
             return True
+        except requests.ConnectionError as e:
+            raise NifiConnectionError(f"NiFi API not reachable: {e}") from e
         except requests.RequestException as e:
             raise NifiClientError(f"Registry client delete failed: {e}") from e
 

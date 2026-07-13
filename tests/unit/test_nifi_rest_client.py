@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from nifi_rest_client import NifiClientError, NifiRestClient
+from nifi_rest_client import NifiClientError, NifiConnectionError, NifiRestClient
 
 
 class TestNifiRestClient:
@@ -96,6 +96,15 @@ class TestNifiRestClient:
         mock_session.post.return_value.raise_for_status.side_effect = requests.HTTPError("500")
 
         with pytest.raises(NifiClientError, match="Registry client operation failed"):
+            client.create_or_update_registry_client(
+                name="err-client",
+                repository_url="https://github.com/owner/repo.git",
+            )
+
+    def test_create_raises_nifi_connection_error_on_connection_error(self, client, mock_session):
+        mock_session.get.side_effect = requests.ConnectionError("Connection refused")
+
+        with pytest.raises(NifiConnectionError, match="NiFi API not reachable"):
             client.create_or_update_registry_client(
                 name="err-client",
                 repository_url="https://github.com/owner/repo.git",

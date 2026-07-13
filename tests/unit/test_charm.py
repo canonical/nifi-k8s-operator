@@ -14,7 +14,7 @@ import pytest
 from conftest import _SENSITIVE_KEY_SECRET, SENSITIVE_KEY_VALUE
 
 import constants
-from nifi_rest_client import NifiClientError
+from nifi_rest_client import NifiClientError, NifiConnectionError
 
 
 def _state_with_secret_and_relations(container, relations):
@@ -302,10 +302,7 @@ class TestGitRegistryRelation:
         self, mock_create, context, container, git_registry_relation_ready
     ):
         """Charm enters MaintenanceStatus when NiFi API is not yet reachable."""
-        cause = ConnectionError("Connection refused")
-        err = NifiClientError("Registry client operation failed")
-        err.__cause__ = cause
-        mock_create.side_effect = err
+        mock_create.side_effect = NifiConnectionError("NiFi API not reachable: Connection refused")
         state_in = _state_with_secret_and_relations(container, [git_registry_relation_ready])
         state_out = context.run(context.on.pebble_ready(container), state_in)
         assert state_out.unit_status == ops.MaintenanceStatus(constants.MSG_NIFI_STARTING)

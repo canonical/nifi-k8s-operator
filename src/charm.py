@@ -50,12 +50,57 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             self.on.update_status,
         ]:
             self.framework.observe(event, self._reconcile)
+        self.framework.observe(self.on.secret_changed, self._reconcile)
 
     def _check_git_registry(self) -> None:
         """If a git-registry relation exists but is not yet ready, raise."""
         relations = self.git_registry.relations
         if relations and not self.git_registry.is_ready():
             raise ExitWithStatusError(constants.MSG_GIT_REGISTRY_NOT_READY, ops.WaitingStatus)
+
+    def _rotate_sensitive_key(self, event) -> bool:
+        """Run nifi.sh key rotation if *event* is a secret-changed for our key.
+
+        Returns True if rotation was performed (caller must restart NiFi).
+        Returns False if the event is unrelated and no action was taken.
+
+        Raises:
+            ExitWithStatusError: on validation failures or pebble errors.
+        """
+        if not isinstance(event, ops.SecretChangedEvent):
+            return False
+        if event.secret.id != self.config.get(constants.SENSITIVE_PROPS_KEY_CONFIG):
+            return False
+
+        try:
+            content = event.secret.get_content(refresh=True)
+        except (ops.SecretNotFoundError, ops.ModelError) as e:
+            logger.exception("Failed to refresh sensitive-props-key secret: %s", e)
+            raise ExitWithStatusError(constants.MSG_SENSITIVE_KEY_INVALID, ops.BlockedStatus)
+
+        new_key = content.get(constants.SENSITIVE_PROPS_KEY_FIELD, "")
+        if len(new_key) < constants.SENSITIVE_PROPS_KEY_MIN_LENGTH:
+            raise ExitWithStatusError(constants.MSG_SENSITIVE_KEY_TOO_SHORT, ops.BlockedStatus)
+
+        self.unit.status = ops.MaintenanceStatus(constants.MSG_ROTATING_SENSITIVE_KEY)
+        try:
+            self._container.stop(constants.SERVICE_NAME)
+            self._container.exec(
+                [f"{constants.NIFI_HOME}/bin/nifi.sh", "set-sensitive-properties-key", new_key],
+                user=constants.WORKLOAD_USER,
+                group=constants.WORKLOAD_GROUP,
+            ).wait_output()
+            self._container.push(
+                constants.NIFI_PROPERTIES_PATH,
+                self._renderer.render_nifi_properties(sensitive_props_key=new_key),
+                user=constants.WORKLOAD_USER,
+                group=constants.WORKLOAD_GROUP,
+                make_dirs=True,
+            )
+        except ops.pebble.Error as e:
+            logger.exception("Failed to rotate sensitive props key: %s", e)
+            raise ExitWithStatusError(constants.MSG_KEY_ROTATION_FAILED, ops.BlockedStatus)
+        return True
 
     def _check_pebble_connection(self) -> None:
         """Verify connection to the container; otherwise raise."""
@@ -94,9 +139,11 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         """Resolve nifi.sensitive.props.key from the configured Juju user secret.
 
         Once nifi.properties has been written to disk, the key is read from the
-        existing file rather than from the secret. This ensures the charm ignores
-        any subsequent secret updates — key rotation is a future feature and
-        changing the key while NiFi has existing flows would corrupt them.
+        existing file rather than from the secret. This ensures reconcile ignores
+        any secret updates that were not routed through the deliberate rotation
+        flow (see _rotate_sensitive_key), which is the only path allowed to
+        change the key in place — an unmanaged change would leave NiFi unable
+        to decrypt existing flows.
 
         Raises:
             ExitWithStatusError(BlockedStatus): if the secret is unset, unreadable,
@@ -293,25 +340,26 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             logger.exception("Pebble (re)start failed: %s", e)
             raise ExitWithStatusError(constants.MSG_SERVICE_START_FAILED, ops.BlockedStatus)
 
-    def _reconcile(self, _) -> None:
+    def _reconcile(self, event) -> None:
         """Idempotent reconcile handler for all charm events.
 
         1. Verify container connectivity.
-        2. Render and push nifi.properties and state-management.xml (if changed).
-        3. Apply pebble layer and (re)start the service as needed.
+        2. If secret-changed for our key, rotate (nifi.sh + push new properties).
+        3. Render and push nifi.properties and state-management.xml (if changed).
+        4. Apply pebble layer and (re)start the service as needed.
         """
         try:
             self._check_pebble_connection()
             self._check_git_registry()
             self._ensure_storage_dirs()
             was_running = self._service_is_running()
+            rotated = self._rotate_sensitive_key(event)
             config_changed = self._write_nifi_properties()
             self._write_state_management_xml()
 
-            # On first boot, replan starts the service (startup: enabled).
-            # On subsequent reconciles with config changes, restart is required
-            # because NiFi reads nifi.properties only at startup.
-            self._add_layer_and_replan(restart=config_changed and was_running)
+            # Restart when config drifted on a running service, or after rotation
+            # (NiFi was stopped by the toolkit command and must be brought back).
+            self._add_layer_and_replan(restart=(config_changed and was_running) or rotated)
 
         except ExitWithStatusError as e:
             self.unit.status = e.status

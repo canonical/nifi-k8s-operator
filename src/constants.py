@@ -59,3 +59,5 @@ MSG_SENSITIVE_KEY_TOO_SHORT = (
     f"{SENSITIVE_PROPS_KEY_MIN_LENGTH} characters long"
 )
 MSG_PROPERTY_READ_ERROR = "Failed to read nifi.properties from workload; will retry"
+MSG_ROTATING_SENSITIVE_KEY = "Rotating nifi.sensitive.props.key"
+MSG_KEY_ROTATION_FAILED = "Failed to rotate nifi.sensitive.props.key"

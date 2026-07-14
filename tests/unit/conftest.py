@@ -214,3 +214,74 @@ def booting_state(booting_container):
         secrets={_SENSITIVE_KEY_SECRET},
         config={constants.SENSITIVE_PROPS_KEY_CONFIG: _SENSITIVE_KEY_SECRET.id},
     )
+
+
+# ---------------------------------------------------------------------------
+# sensitive-props-key rotation fixtures
+# ---------------------------------------------------------------------------
+
+_ROTATE_KEY_EXEC = ops.testing.Exec(
+    [f"{constants.NIFI_HOME}/bin/nifi.sh", "set-sensitive-properties-key"],
+)
+
+_FAILING_ROTATE_KEY_EXEC = ops.testing.Exec(
+    [f"{constants.NIFI_HOME}/bin/nifi.sh", "set-sensitive-properties-key"],
+    return_code=1,
+    stderr="toolkit error",
+)
+
+
+@pytest.fixture()
+def rotation_container_factory(tmp_path):
+    """Factory for a running container with a real nifi.properties file on disk.
+
+    Needed for rotation tests because the charm reads/rewrites the sensitive
+    key directly on the workload filesystem rather than via an in-memory value.
+    """
+    service_layer = ops.pebble.Layer(
+        {
+            "services": {
+                constants.SERVICE_NAME: {
+                    "override": "replace",
+                    "summary": "Apache NiFi",
+                    "command": f"{constants.NIFI_HOME}/bin/nifi.sh run",
+                    "startup": "enabled",
+                    "user": constants.WORKLOAD_USER,
+                    "group": constants.WORKLOAD_GROUP,
+                }
+            }
+        }
+    )
+
+    def _make(
+        key: str,
+        check_status: ops.pebble.CheckStatus = ops.pebble.CheckStatus.UP,
+        *,
+        rotate_fails: bool = False,
+    ):
+        conf_dir = tmp_path / "conf"
+        conf_dir.mkdir(exist_ok=True)
+        (conf_dir / "nifi.properties").write_text(f"nifi.sensitive.props.key={key}\n")
+        rotate_exec = _FAILING_ROTATE_KEY_EXEC if rotate_fails else _ROTATE_KEY_EXEC
+        return ops.testing.Container(
+            name=constants.CONTAINER_NAME,
+            can_connect=True,
+            service_statuses={constants.SERVICE_NAME: ops.pebble.ServiceStatus.ACTIVE},
+            layers={"nifi-check": _NIFI_READY_LAYER, "nifi": service_layer},
+            execs={rotate_exec, _CHOWN_EXEC, *_STAT_EXECS},
+            check_infos={
+                ops.testing.CheckInfo(
+                    constants.READY_CHECK_NAME,
+                    level=ops.pebble.CheckLevel.READY,
+                    status=check_status,
+                ),
+            },
+            mounts={
+                "conf": ops.testing.Mount(
+                    location=f"{constants.NIFI_HOME}/conf",
+                    source=conf_dir,
+                )
+            },
+        )
+
+    return _make

@@ -261,11 +261,11 @@ class TestSensitivePropsKey:
         assert state_out.unit_status == ops.BlockedStatus(constants.MSG_SENSITIVE_KEY_INVALID)
 
     def test_key_unchanged_after_secret_reconfiguration(self, context, container):
-        """Reconfiguring the secret does not change the key in nifi.properties.
+        """Reconfiguring to a different secret via config-changed does not rotate the key.
 
-        Key rotation is a future feature — the charm reads the key from the
-        on-disk file (simulated via Mount) and ignores any secret updates,
-        preventing NiFi from being unable to decrypt existing flows.
+        Rotation only happens via secret-changed on the tracked secret (see
+        TestSensitivePropsKeyRotation). The charm reads the key from the on-disk
+        file (simulated via Mount) and leaves it untouched.
         """
         new_secret = ops.testing.Secret(
             tracked_content={constants.SENSITIVE_PROPS_KEY_FIELD: "completely-different-new-key!"},
@@ -294,3 +294,126 @@ class TestSensitivePropsKey:
             content = (conf_dir / "nifi.properties").read_text()
             assert f"nifi.sensitive.props.key={SENSITIVE_KEY_VALUE}" in content
             assert "completely-different-new-key" not in content
+
+
+class TestSensitivePropsKeyRotation:
+    def test_rotation_updates_properties_and_goes_active(
+        self, context, rotation_container_factory
+    ):
+        """A secret-changed event rotates the key on disk and ends ActiveStatus."""
+        new_key = "rotated-key-1234567890"
+        container = rotation_container_factory(SENSITIVE_KEY_VALUE)
+        secret = ops.testing.Secret(
+            tracked_content={constants.SENSITIVE_PROPS_KEY_FIELD: SENSITIVE_KEY_VALUE},
+            latest_content={constants.SENSITIVE_PROPS_KEY_FIELD: new_key},
+        )
+        state = ops.testing.State(
+            containers=[container],
+            secrets={secret},
+            config={constants.SENSITIVE_PROPS_KEY_CONFIG: secret.id},
+        )
+
+        state_out = context.run(context.on.secret_changed(secret), state)
+
+        assert state_out.unit_status == ops.ActiveStatus()
+        content = container.mounts["conf"].source.joinpath("nifi.properties").read_text()
+        assert f"nifi.sensitive.props.key={new_key}" in content
+
+    def test_too_short_new_key_goes_blocked_without_writing(
+        self, context, rotation_container_factory
+    ):
+        """A too-short replacement key blocks the unit and leaves the file untouched."""
+        container = rotation_container_factory(SENSITIVE_KEY_VALUE)
+        secret = ops.testing.Secret(
+            tracked_content={constants.SENSITIVE_PROPS_KEY_FIELD: SENSITIVE_KEY_VALUE},
+            latest_content={constants.SENSITIVE_PROPS_KEY_FIELD: "short"},
+        )
+        state = ops.testing.State(
+            containers=[container],
+            secrets={secret},
+            config={constants.SENSITIVE_PROPS_KEY_CONFIG: secret.id},
+        )
+
+        state_out = context.run(context.on.secret_changed(secret), state)
+
+        assert state_out.unit_status == ops.BlockedStatus(constants.MSG_SENSITIVE_KEY_TOO_SHORT)
+        content = container.mounts["conf"].source.joinpath("nifi.properties").read_text()
+        assert f"nifi.sensitive.props.key={SENSITIVE_KEY_VALUE}" in content
+
+    def test_rotation_stays_maintenance_until_ready_check_passes(
+        self, context, rotation_container_factory
+    ):
+        """If NiFi is still booting after restart, the unit waits before going Active."""
+        new_key = "rotated-key-1234567890"
+        container = rotation_container_factory(
+            SENSITIVE_KEY_VALUE, check_status=ops.pebble.CheckStatus.DOWN
+        )
+        secret = ops.testing.Secret(
+            tracked_content={constants.SENSITIVE_PROPS_KEY_FIELD: SENSITIVE_KEY_VALUE},
+            latest_content={constants.SENSITIVE_PROPS_KEY_FIELD: new_key},
+        )
+        state = ops.testing.State(
+            containers=[container],
+            secrets={secret},
+            config={constants.SENSITIVE_PROPS_KEY_CONFIG: secret.id},
+        )
+
+        state = context.run(context.on.secret_changed(secret), state)
+        assert state.unit_status == ops.MaintenanceStatus(constants.MSG_NIFI_STARTING)
+
+        booted_container = dataclasses.replace(
+            next(iter(state.containers)),
+            check_infos={
+                ops.testing.CheckInfo(
+                    constants.READY_CHECK_NAME,
+                    level=ops.pebble.CheckLevel.READY,
+                    status=ops.pebble.CheckStatus.UP,
+                ),
+            },
+        )
+        state = dataclasses.replace(state, containers=[booted_container])
+        state_out = context.run(context.on.update_status(), state)
+
+        assert state_out.unit_status == ops.ActiveStatus()
+
+    def test_unreadable_secret_on_refresh_goes_blocked(self, context, rotation_container_factory):
+        """A secret that fails to refresh blocks the unit without touching the file."""
+        container = rotation_container_factory(SENSITIVE_KEY_VALUE)
+        secret = ops.testing.Secret(
+            tracked_content={constants.SENSITIVE_PROPS_KEY_FIELD: SENSITIVE_KEY_VALUE},
+            latest_content={constants.SENSITIVE_PROPS_KEY_FIELD: "rotated-key-1234567890"},
+        )
+        state = ops.testing.State(
+            containers=[container],
+            secrets={secret},
+            config={constants.SENSITIVE_PROPS_KEY_CONFIG: secret.id},
+        )
+
+        with patch(
+            "ops.Secret.get_content",
+            side_effect=ops.SecretNotFoundError("secret not found"),
+        ):
+            state_out = context.run(context.on.secret_changed(secret), state)
+
+        assert state_out.unit_status == ops.BlockedStatus(constants.MSG_SENSITIVE_KEY_INVALID)
+        content = container.mounts["conf"].source.joinpath("nifi.properties").read_text()
+        assert f"nifi.sensitive.props.key={SENSITIVE_KEY_VALUE}" in content
+
+    def test_exec_failure_during_rotation_goes_blocked(self, context, rotation_container_factory):
+        """A failing nifi.sh invocation blocks the unit without updating the file."""
+        container = rotation_container_factory(SENSITIVE_KEY_VALUE, rotate_fails=True)
+        secret = ops.testing.Secret(
+            tracked_content={constants.SENSITIVE_PROPS_KEY_FIELD: SENSITIVE_KEY_VALUE},
+            latest_content={constants.SENSITIVE_PROPS_KEY_FIELD: "rotated-key-1234567890"},
+        )
+        state = ops.testing.State(
+            containers=[container],
+            secrets={secret},
+            config={constants.SENSITIVE_PROPS_KEY_CONFIG: secret.id},
+        )
+
+        state_out = context.run(context.on.secret_changed(secret), state)
+
+        assert state_out.unit_status == ops.BlockedStatus(constants.MSG_KEY_ROTATION_FAILED)
+        content = container.mounts["conf"].source.joinpath("nifi.properties").read_text()
+        assert f"nifi.sensitive.props.key={SENSITIVE_KEY_VALUE}" in content

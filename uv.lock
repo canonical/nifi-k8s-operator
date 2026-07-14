@@ -297,7 +297,6 @@ dependencies = [
     { name = "nipyapi" },
     { name = "ops" },
     { name = "pydantic" },
-    { name = "requests" },
 ]
 
 [package.dev-dependencies]
@@ -320,7 +319,6 @@ requires-dist = [
     { name = "nipyapi", specifier = ">=1.5.1" },
     { name = "ops", specifier = ">=3,<4" },
     { name = "pydantic", specifier = ">=2" },
-    { name = "requests", specifier = ">=2.32" },
 ]
 
 [package.metadata.requires-dev]

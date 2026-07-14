@@ -55,6 +55,12 @@ class NifiRestClient:
         owner, repo_name = parts[-2], parts[-1]
         api_base_url = f"{parsed.scheme}://{parsed.netloc}"
 
+        # TODO: GitLab detection limitation
+        # Currently detecting GitLab by checking if "gitlab" appears in the URL.
+        # This fails for self-hosted GitLab instances with custom domains (e.g., git.company.com).
+        # Tracked in: https://github.com/canonical/nifi-k8s-operator/issues/XX
+        # Enhancement proposal for git-integrator: https://github.com/canonical/git-integrator/issues/XX
+        # Once git-integrator provides explicit provider type information, update this logic.
         is_gitlab = "gitlab" in repository_url.lower()
 
         if is_gitlab:

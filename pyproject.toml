@@ -7,7 +7,6 @@ dependencies = [
     "ops>=3,<4",
     "Jinja2>=3.1",
     "pydantic>=2",
-    "requests>=2.32",
     "nipyapi>=1.5.1",
 ]
 

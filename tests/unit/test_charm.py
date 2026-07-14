@@ -319,6 +319,28 @@ class TestGitRegistryRelation:
         state_out = context.run(context.on.pebble_ready(container), state_in)
         assert state_out.unit_status == ops.BlockedStatus(constants.MSG_GIT_REGISTRY_API_ERROR)
 
+    @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
+    def test_value_error_goes_blocked_with_specific_message(
+        self, mock_create, context, container, git_registry_relation_ready
+    ):
+        """Charm enters BlockedStatus with specific ValueError message surfaced."""
+        mock_create.side_effect = ValueError(
+            "GitLab flow registry clients require a personal access token"
+        )
+        state_in = _state_with_secret_and_relations(container, [git_registry_relation_ready])
+        state_out = context.run(context.on.pebble_ready(container), state_in)
+        assert state_out.unit_status == ops.BlockedStatus(
+            "GitLab flow registry clients require a personal access token"
+        )
+
+    def test_ssh_auth_goes_blocked(self, context, container, git_registry_relation_ssh):
+        """Charm enters BlockedStatus when git-integrator uses SSH authentication."""
+        state_in = _state_with_secret_and_relations(container, [git_registry_relation_ssh])
+        state_out = context.run(context.on.pebble_ready(container), state_in)
+        assert state_out.unit_status == ops.BlockedStatus(
+            constants.MSG_GIT_REGISTRY_SSH_UNSUPPORTED
+        )
+
     @patch("nifi_rest_client.NifiRestClient.delete_registry_client")
     def test_relation_broken_deletes_and_stays_active(
         self, mock_delete, context, container, git_registry_relation_ready

@@ -235,6 +235,19 @@ def git_registry_relation_empty():
 
 
 @pytest.fixture()
+def git_registry_relation_ssh():
+    """git-registry relation with SSH authentication method."""
+    return ops.testing.Relation(
+        constants.GIT_REGISTRY_RELATION,
+        remote_app_data={
+            "repository-url": "git@github.com:example/nifi-flows.git",
+            "tracking-ref": "main",
+            "authentication-method": "ssh",
+        },
+    )
+
+
+@pytest.fixture()
 def booting_state(booting_container):
     """State for a booting container with sensitive-props-key secret configured."""
     return ops.testing.State(

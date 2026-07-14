@@ -39,3 +39,15 @@ integration *args: clean pack-charm
 	fi
 	uv sync --group integration
 	uv run tox -e integration -- {{args}}
+
+just get-system-state:
+	#!/usr/bin/bash
+
+	df -h
+	echo "---"
+
+	juju status --model test --color --relations --storage
+	echo "---"
+
+	sudo k8s status
+	echo "---"

@@ -62,11 +62,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          
-          sudo apt-get update
-          sudo apt-get purge -y $(dpkg -l | grep -i docker | awk '{print $2}') || true
-          sudo apt-get purge -y containerd.io || true
-          sudo rm -rf /run/containerd || true
 
           sudo snap install concierge --classic
           sudo snap install charmcraft --classic --channel=latest/stable || sudo snap refresh charmcraft --classic --channel=latest/stable
@@ -80,8 +75,6 @@ jobs:
       - name: Run integration tests
         run: just integration
 
-      - name: Print juju status on failure
+      - name: Get system state (if failure)
         if: failure()
-        run: |
-          juju status --relations
-          juju debug-log --replay --level DEBUG | tail -200
+        run: just get-system-state

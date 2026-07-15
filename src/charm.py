@@ -86,7 +86,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         """Delete NiFi flow registry client via REST API. Best-effort."""
         try:
             self._nifi_client.delete_registry_client(constants.FLOW_REGISTRY_CLIENT_NAME)
-        except NifiClientError as e:
+        except (NifiClientError, NifiConnectionError) as e:
             logger.warning("Failed to delete flow registry client (best-effort): %s", e)
 
     def _reconcile_git_registry(self) -> None:

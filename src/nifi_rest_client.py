@@ -7,6 +7,7 @@ import logging
 from urllib.parse import urlsplit
 
 import nipyapi
+import urllib3.exceptions
 from nipyapi.nifi.apis import ControllerApi
 from nipyapi.nifi.models import FlowRegistryClientDTO, FlowRegistryClientEntity, RevisionDTO
 from nipyapi.nifi.rest import ApiException
@@ -154,6 +155,8 @@ class NifiRestClient:
                 (c for c in registries if c.component and c.component.name == name),
                 None,
             )
+        except (urllib3.exceptions.MaxRetryError, urllib3.exceptions.NewConnectionError) as e:
+            raise NifiConnectionError(f"NiFi API not reachable: {e}") from e
         except ApiException as e:
             if e.status in (0, 503):
                 raise NifiConnectionError(f"NiFi API not reachable: {e}") from e

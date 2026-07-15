@@ -364,6 +364,16 @@ class TestGitRegistryRelation:
         state_out = context.run(context.on.relation_broken(git_registry_relation_ready), state_in)
         assert state_out.unit_status == ops.ActiveStatus()
 
+    @patch("nifi_rest_client.NifiRestClient.delete_registry_client")
+    def test_no_relation_delete_connection_error_is_harmless(
+        self, mock_delete, context, container
+    ):
+        """Delete failure due to NiFi being unreachable doesn't crash when no relation exists."""
+        mock_delete.side_effect = NifiConnectionError("NiFi API not reachable: Connection refused")
+        state_in = _state_with_secret_and_relations(container, [])
+        state_out = context.run(context.on.config_changed(), state_in)
+        assert state_out.unit_status == ops.ActiveStatus()
+
     @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
     def test_registry_client_updated_on_data_change(
         self, mock_create, context, container, git_registry_relation_ready

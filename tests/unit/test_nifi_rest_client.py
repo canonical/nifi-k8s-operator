@@ -6,6 +6,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+import urllib3.exceptions
 from nipyapi.nifi.models import FlowRegistryClientDTO, FlowRegistryClientEntity, RevisionDTO
 from nipyapi.nifi.rest import ApiException
 
@@ -175,4 +176,26 @@ class TestNifiRestClient:
         mock_controller.get_flow_registry_clients.side_effect = ApiException(status=status_code)
 
         with pytest.raises(expected_exception, match=expected_message):
+            client._find_by_name("test-client")
+
+    @pytest.mark.parametrize(
+        ("exception_class", "expected_message"),
+        [
+            (urllib3.exceptions.MaxRetryError, "NiFi API not reachable"),
+            (urllib3.exceptions.NewConnectionError, "NiFi API not reachable"),
+        ],
+        ids=["max_retry_error", "new_connection_error"],
+    )
+    def test_find_by_name_raises_connection_error_on_urllib3_exception(
+        self, client, mock_controller, exception_class, expected_message
+    ):
+        pool = MagicMock()
+        # MaxRetryError and NewConnectionError have different signatures
+        if exception_class == urllib3.exceptions.MaxRetryError:
+            exc = exception_class(pool, "http://localhost:8080/nifi-api", "Connection refused")
+        else:  # NewConnectionError
+            exc = exception_class(pool, "Connection refused")
+        mock_controller.get_flow_registry_clients.side_effect = exc
+
+        with pytest.raises(NifiConnectionError, match=expected_message):
             client._find_by_name("test-client")

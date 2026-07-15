@@ -5,7 +5,8 @@ on:
     branches:
       - track/**
     paths-ignore:
-      - '.github/workflows/ci.yaml'
+      - '.github/workflows/tests.yaml'
+      - '.github/workflows/publish.yaml'
 
 jobs:
   tests:
@@ -23,13 +24,13 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Upload charm package
-        uses: canonical/charming-actions/upload-charm@2.6.2
+        uses: canonical/charming-actions/upload-charm@2.7.0
         with:
           credentials: ${{ secrets.CHARMHUB_TOKEN }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          channel: 3.1/edge
-          tag-prefix: airflow-coordinator
-          charmcraft-channel: 3.x/stable
+          channel: 2.10/edge
+          tag-prefix: nifi
+          charmcraft-channel: 4.x/stable
 
   publish-libs:
     name: 'Publish charm libs'
@@ -42,8 +43,8 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Upload charm lib
-        uses: canonical/charming-actions/release-libraries@2.6.2
+        uses: canonical/charming-actions/release-libraries@2.7.0
         with:
           credentials: ${{ secrets.CHARMHUB_TOKEN }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          charmcraft-channel: 3.x/stable
+          charmcraft-channel: 4.x/stable

@@ -127,3 +127,52 @@ class TestNifiRestClient:
                 name="bad-url",
                 repository_url="https://github.com/only-one-part",
             )
+
+    def test_gitlab_without_token_raises_value_error(self, client, mock_controller):
+        with pytest.raises(
+            ValueError, match="GitLab flow registry clients require a personal access token"
+        ):
+            client.create_or_update_registry_client(
+                name="gitlab-no-token",
+                repository_url="https://gitlab.com/canonical/nifi-registry.git",
+                token=None,
+            )
+
+    @pytest.mark.parametrize(
+        "status_code,expected_exception,expected_message",
+        [
+            (503, NifiConnectionError, "NiFi API not reachable"),
+            (0, NifiConnectionError, "NiFi API not reachable"),
+            (404, NifiClientError, "Registry client delete failed"),
+            (500, NifiClientError, "Registry client delete failed"),
+        ],
+        ids=["503_connection_error", "0_connection_error", "404_client_error", "500_client_error"],
+    )
+    def test_delete_raises_errors_on_api_exception(
+        self, client, mock_controller, status_code, expected_exception, expected_message
+    ):
+        mock_controller.get_flow_registry_clients.return_value.registries = [
+            _make_entity("to-delete", "del-id", 1)
+        ]
+        mock_controller.delete_flow_registry_client.side_effect = ApiException(status=status_code)
+
+        with pytest.raises(expected_exception, match=expected_message):
+            client.delete_registry_client("to-delete")
+
+    @pytest.mark.parametrize(
+        "status_code,expected_exception,expected_message",
+        [
+            (503, NifiConnectionError, "NiFi API not reachable"),
+            (0, NifiConnectionError, "NiFi API not reachable"),
+            (404, NifiClientError, "Failed to list registry clients"),
+            (500, NifiClientError, "Failed to list registry clients"),
+        ],
+        ids=["503_connection_error", "0_connection_error", "404_client_error", "500_client_error"],
+    )
+    def test_find_by_name_raises_errors_on_api_exception(
+        self, client, mock_controller, status_code, expected_exception, expected_message
+    ):
+        mock_controller.get_flow_registry_clients.side_effect = ApiException(status=status_code)
+
+        with pytest.raises(expected_exception, match=expected_message):
+            client._find_by_name("test-client")

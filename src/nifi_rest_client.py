@@ -141,9 +141,20 @@ class NifiRestClient:
             raise NifiClientError(f"Registry client delete failed: {e}") from e
 
     def _find_by_name(self, name: str):
-        result = self._controller.get_flow_registry_clients()
-        registries = (result.registries or []) if result else []
-        return next(
-            (c for c in registries if c.component and c.component.name == name),
-            None,
-        )
+        """Find a flow registry client by name.
+
+        Raises:
+            NifiConnectionError: If the NiFi API is not reachable (status 0 or 503).
+            NifiClientError: If the API call fails with other HTTP errors.
+        """
+        try:
+            result = self._controller.get_flow_registry_clients()
+            registries = (result.registries or []) if result else []
+            return next(
+                (c for c in registries if c.component and c.component.name == name),
+                None,
+            )
+        except ApiException as e:
+            if e.status in (0, 503):
+                raise NifiConnectionError(f"NiFi API not reachable: {e}") from e
+            raise NifiClientError(f"Failed to list registry clients: {e}") from e

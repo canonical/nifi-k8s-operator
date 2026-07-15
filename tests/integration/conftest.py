@@ -66,3 +66,10 @@ def nifi_curl(juju: jubilant.Juju, path: str) -> str:
     """Run a curl GET against the NiFi REST API inside the workload container."""
     cmd = f"curl -fsS --max-time 10 http://localhost:{constants.NIFI_PORT}{path}"
     return juju.ssh(UNIT, cmd, container=constants.CONTAINER_NAME)
+
+
+def get_nifi_sensitive_key(juju: jubilant.Juju) -> str:
+    """Retrieve the current nifi.sensitive.props.key value from nifi.properties."""
+    cmd = f"cat {constants.NIFI_PROPERTIES_PATH} | grep nifi.sensitive.props.key"
+    output = juju.ssh(UNIT, cmd, container=constants.CONTAINER_NAME).strip()
+    return output.split("=", 1)[1] if "=" in output else ""

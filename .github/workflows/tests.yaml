@@ -48,3 +48,33 @@ jobs:
 
       - name: Run unit tests
         run: just unit
+
+  integration-tests:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install dependencies (concierge)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo snap install concierge --classic
+          sudo snap install charmcraft --classic --channel=latest/stable || sudo snap refresh charmcraft --classic --channel=latest/stable
+          sudo -E concierge prepare -p k8s --extra-snaps=astral-uv,just
+
+          mkdir -p ~/.kube
+          sudo k8s kubectl config view --raw > ~/.kube/config
+
+          uv tool install tox
+
+      - name: Run integration tests
+        run: just integration
+
+      - name: Get system state (if failure)
+        if: failure()
+        run: just get-system-state

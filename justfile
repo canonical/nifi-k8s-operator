@@ -17,3 +17,37 @@ format:
 # Run unit tests
 unit:
 	uv tool run --python 3.12 tox -e unit
+
+# Pack the nifi-k8s charm
+pack-charm: clean-charm
+	charmcraft pack
+
+# Remove built charm artefacts
+clean-charm:
+	find . -maxdepth 1 -name "*.charm" -delete
+
+# Destroy the integration test Juju model and remove charm artefacts
+clean: clean-charm
+	#!/usr/bin/env bash
+	juju destroy-model --force --destroy-storage --no-prompt "${JUJU_MODEL:-test}" || true
+
+integration *args: clean pack-charm
+	#!/usr/bin/env bash
+	set -euo pipefail
+	if [ -n "{{args}}" ]; then
+		export JUJU_MODEL=test
+	fi
+	uv sync --group integration
+	uv run tox -e integration -- {{args}}
+
+just get-system-state:
+	#!/usr/bin/bash
+
+	df -h
+	echo "---"
+
+	juju status --model test --color --relations --storage
+	echo "---"
+
+	sudo k8s status
+	echo "---"

@@ -48,9 +48,9 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             self.on.start,
             self.on.config_changed,
             self.on.update_status,
+            self.on.secret_changed,
         ]:
             self.framework.observe(event, self._reconcile)
-        self.framework.observe(self.on.secret_changed, self._reconcile)
 
     def _check_git_registry(self) -> None:
         """If a git-registry relation exists but is not yet ready, raise."""

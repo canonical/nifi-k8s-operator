@@ -27,6 +27,44 @@ class TestReconcile:
         state_out = context.run(context.on.update_status(), running_state)
         assert state_out.unit_status == ops.ActiveStatus()
 
+    @pytest.mark.parametrize(
+        "make_event",
+        [
+            lambda ctx, c: ctx.on.pebble_ready(c),
+            lambda ctx, c: ctx.on.config_changed(),
+            lambda ctx, c: ctx.on.update_status(),
+        ],
+        ids=["pebble_ready", "config_changed", "update_status"],
+    )
+    def test_reconcile_events_reach_active(self, context, container, make_event):
+        """Events that trigger _reconcile reach ActiveStatus when charm is healthy."""
+        secret = ops.testing.Secret(
+            tracked_content={constants.SENSITIVE_PROPS_KEY_FIELD: SENSITIVE_KEY_VALUE},
+        )
+        state = ops.testing.State(
+            containers=[container],
+            secrets={secret},
+            config={constants.SENSITIVE_PROPS_KEY_CONFIG: secret.id},
+        )
+        state_out = context.run(make_event(context, container), state)
+        assert state_out.unit_status == ops.ActiveStatus()
+
+    def test_secret_changed_reaches_active_with_running_service(
+        self, context, rotation_container_factory
+    ):
+        """secret_changed triggers _reconcile and reaches Active with running service."""
+        container = rotation_container_factory(SENSITIVE_KEY_VALUE)
+        secret = ops.testing.Secret(
+            tracked_content={constants.SENSITIVE_PROPS_KEY_FIELD: SENSITIVE_KEY_VALUE},
+        )
+        state = ops.testing.State(
+            containers=[container],
+            secrets={secret},
+            config={constants.SENSITIVE_PROPS_KEY_CONFIG: secret.id},
+        )
+        state_out = context.run(context.on.secret_changed(secret), state)
+        assert state_out.unit_status == ops.ActiveStatus()
+
     def test_pebble_ready_maintenance_while_starting(
         self, context, booting_state, booting_container
     ):
@@ -312,6 +350,11 @@ class TestSensitivePropsKeyRotation:
             secrets={secret},
             config={constants.SENSITIVE_PROPS_KEY_CONFIG: secret.id},
         )
+
+        # Verify new key is NOT in properties before rotation
+        content_before = container.mounts["conf"].source.joinpath("nifi.properties").read_text()
+        assert f"nifi.sensitive.props.key={new_key}" not in content_before
+        assert f"nifi.sensitive.props.key={SENSITIVE_KEY_VALUE}" in content_before
 
         state_out = context.run(context.on.secret_changed(secret), state)
 

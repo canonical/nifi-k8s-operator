@@ -82,7 +82,6 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         if len(new_key) < constants.SENSITIVE_PROPS_KEY_MIN_LENGTH:
             raise ExitWithStatusError(constants.MSG_SENSITIVE_KEY_TOO_SHORT, ops.BlockedStatus)
 
-        self.unit.status = ops.MaintenanceStatus(constants.MSG_ROTATING_SENSITIVE_KEY)
         try:
             self._container.stop(constants.SERVICE_NAME)
             self._container.exec(
@@ -350,10 +349,10 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         """
         try:
             self._check_pebble_connection()
+            rotated = self._rotate_sensitive_key(event)
             self._check_git_registry()
             self._ensure_storage_dirs()
             was_running = self._service_is_running()
-            rotated = self._rotate_sensitive_key(event)
             config_changed = self._write_nifi_properties()
             self._write_state_management_xml()
 

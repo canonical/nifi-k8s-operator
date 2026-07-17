@@ -1,0 +1,50 @@
+name: Publish charm
+
+on:
+  push:
+    branches:
+      - track/**
+    paths-ignore:
+      - '.github/workflows/tests.yaml'
+      - '.github/workflows/publish.yaml'
+
+jobs:
+  tests:
+    name: Release tests
+    uses: ./.github/workflows/tests.yaml
+
+  publish:
+    name: 'Publish charm to edge | amd64'
+    runs-on: ubuntu-latest
+    needs:
+      - tests
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Upload charm package
+        uses: canonical/charming-actions/upload-charm@2.7.0
+        with:
+          credentials: ${{ secrets.CHARMHUB_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          channel: 2.10/edge
+          tag-prefix: nifi
+          charmcraft-channel: 4.x/stable
+
+  publish-libs:
+    name: 'Publish charm libs'
+    runs-on: ubuntu-latest
+    needs:
+      - tests
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Upload charm lib
+        uses: canonical/charming-actions/release-libraries@2.7.0
+        with:
+          credentials: ${{ secrets.CHARMHUB_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          charmcraft-channel: 4.x/stable

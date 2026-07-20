@@ -64,7 +64,7 @@ jobs:
           set -euo pipefail
 
           sudo snap install concierge --classic
-          sudo snap install charmcraft --classic --channel=latest/stable || sudo snap refresh charmcraft --classic --channel=latest/stable
+          
           sudo -E concierge prepare -p k8s --extra-snaps=astral-uv,just
 
           mkdir -p ~/.kube

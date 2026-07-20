@@ -1,6 +1,8 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
+from unittest.mock import MagicMock, patch
+
 import ops
 import ops.testing
 import pytest
@@ -31,7 +33,7 @@ _NIFI_READY_LAYER = ops.pebble.Layer(
                 "level": "ready",
                 "startup": "enabled",
                 "threshold": 3,
-                "http": {"url": f"http://localhost:{constants.NIFI_PORT}/nifi"},
+                "http": {"url": f"http://localhost:{constants.NIFI_PORT}/nifi/"},
             }
         }
     }
@@ -198,11 +200,50 @@ def git_registry_relation_ready():
 
 
 @pytest.fixture()
+def git_registry_relation_with_credentials():
+    """git-registry relation with authentication credentials."""
+    return ops.testing.Relation(
+        constants.GIT_REGISTRY_RELATION,
+        remote_app_data={
+            "repository-url": "https://github.com/example/nifi-flows.git",
+            "tracking-ref": "develop",
+            "credentials-username": "git-user",
+            "credentials-personal-access-token": "ghp_test_token_123",
+        },
+    )
+
+
+@pytest.fixture()
+def git_registry_relation_gitlab():
+    """git-registry relation pointing to a GitLab repository."""
+    return ops.testing.Relation(
+        constants.GIT_REGISTRY_RELATION,
+        remote_app_data={
+            "repository-url": "https://gitlab.com/canonical/nifi-registry.git",
+            "tracking-ref": "main",
+        },
+    )
+
+
+@pytest.fixture()
 def git_registry_relation_empty():
     """git-registry relation joined but provider data not yet written."""
     return ops.testing.Relation(
         constants.GIT_REGISTRY_RELATION,
         remote_app_data={},
+    )
+
+
+@pytest.fixture()
+def git_registry_relation_ssh():
+    """git-registry relation with SSH authentication method."""
+    return ops.testing.Relation(
+        constants.GIT_REGISTRY_RELATION,
+        remote_app_data={
+            "repository-url": "git@github.com:example/nifi-flows.git",
+            "tracking-ref": "main",
+            "authentication-method": "ssh",
+        },
     )
 
 
@@ -285,3 +326,15 @@ def rotation_container_factory(tmp_path):
         )
 
     return _make
+
+
+@pytest.fixture(autouse=True)
+def _block_http(monkeypatch):
+    """Prevent accidental real HTTP calls in unit tests."""
+    with (
+        patch("requests.Session") as mock_session_cls,
+        patch("nifi_rest_client.ControllerApi") as mock_controller_cls,
+    ):
+        mock_session_cls.return_value = MagicMock()
+        mock_controller_cls.return_value = MagicMock()
+        yield

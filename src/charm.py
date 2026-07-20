@@ -11,6 +11,7 @@ import charms.git_integrator.v0.git as git
 import ops
 
 import constants
+from nifi_rest_client import NifiClientError, NifiConnectionError, NifiRestClient
 from properties_manager import NifiPropertiesManager
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         super().__init__(framework)
         self._container = self.unit.get_container(constants.CONTAINER_NAME)
         self._renderer = NifiPropertiesManager()
+        self._nifi_client = NifiRestClient(f"http://localhost:{constants.NIFI_PORT}")
         self.git_registry = git.GitRequires(
             self,
             constants.GIT_REGISTRY_RELATION,
@@ -49,13 +51,71 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             self.on.config_changed,
             self.on.update_status,
             self.on.secret_changed,
+            self.on[constants.GIT_REGISTRY_RELATION].relation_broken,
         ]:
             self.framework.observe(event, self._reconcile)
 
+    def _configure_git_registry_client(self) -> None:
+        """Configure NiFi flow registry client via REST API using git-registry relation data.
+
+        Raises:
+            NifiClientError: If REST API call fails.
+            ValueError: If repository URL is invalid.
+            ExitWithStatusError(BlockedStatus): If git-integrator uses SSH auth
+                (NiFi flow registry clients only support token-based auth)
+        """
+        connection_info_dict = self.git_registry.get_git_connection_information()
+        if not connection_info_dict:
+            return
+
+        info = next(iter(connection_info_dict.values()))
+
+        auth_method = getattr(info, "authentication_method", None)
+        if auth_method and str(auth_method).lower() == "ssh":
+            raise ExitWithStatusError(
+                constants.MSG_GIT_REGISTRY_SSH_UNSUPPORTED, ops.BlockedStatus
+            )
+
+        self._nifi_client.create_or_update_registry_client(
+            name=constants.FLOW_REGISTRY_CLIENT_NAME,
+            repository_url=info.repository_url,
+            branch=info.tracking_ref or "main",
+            token=getattr(info, "credentials_personal_access_token", None),
+        )
+
+    def _delete_git_registry_client(self) -> None:
+        """Delete NiFi flow registry client via REST API. Best-effort."""
+        try:
+            self._nifi_client.delete_registry_client(constants.FLOW_REGISTRY_CLIENT_NAME)
+        except (NifiClientError, NifiConnectionError) as e:
+            logger.warning("Failed to delete flow registry client (best-effort): %s", e)
+
+    def _reconcile_git_registry(self) -> None:
+        """Reconcile git-registry: configure registry client if relation is ready, else clean up.
+
+        Raises:
+            ExitWithStatusError(BlockedStatus): If SSH auth is configured or API call fails.
+            ExitWithStatusError(MaintenanceStatus): If NiFi API is not yet reachable.
+        """
+        if not self.git_registry.relations:
+            self._delete_git_registry_client()
+            return
+
+        try:
+            self._configure_git_registry_client()
+        except NifiConnectionError as e:
+            logger.warning("NiFi API not reachable yet, Juju will retry on next hook: %s", e)
+            raise ExitWithStatusError(constants.MSG_NIFI_STARTING, ops.MaintenanceStatus)
+        except NifiClientError as e:
+            logger.exception("Failed to configure flow registry client: %s", e)
+            raise ExitWithStatusError(constants.MSG_GIT_REGISTRY_API_ERROR, ops.BlockedStatus)
+        except ValueError as e:
+            logger.exception("Failed to configure flow registry client: %s", e)
+            raise ExitWithStatusError(str(e), ops.BlockedStatus)
+
     def _check_git_registry(self) -> None:
         """If a git-registry relation exists but is not yet ready, raise."""
-        relations = self.git_registry.relations
-        if relations and not self.git_registry.is_ready():
+        if self.git_registry.relations and not self.git_registry.is_ready():
             raise ExitWithStatusError(constants.MSG_GIT_REGISTRY_NOT_READY, ops.WaitingStatus)
 
     def _rotate_sensitive_key(self, event) -> bool:
@@ -162,7 +222,6 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         if existing:
             return existing
 
-        # First boot: read from the configured Juju secret.
         key = self._resolve_secret_field(
             constants.SENSITIVE_PROPS_KEY_CONFIG,
             constants.SENSITIVE_PROPS_KEY_FIELD,
@@ -197,9 +256,6 @@ class NifiK8SOperatorCharm(ops.CharmBase):
                         make_parents=True,
                     )
 
-            # Juju storage mount points are owned by root; chown only when necessary.
-            # Check the mount roots non-recursively first to avoid an expensive
-            # recursive chown on every reconcile.
             needs_chown = any(
                 self._container.exec(["stat", "-c", "%U:%G", root]).wait_output()[0].strip()
                 != expected_owner
@@ -311,7 +367,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
                     "level": "ready",
                     "startup": "enabled",
                     "threshold": 3,
-                    "http": {"url": f"http://localhost:{constants.NIFI_PORT}/nifi"},
+                    "http": {"url": f"http://localhost:{constants.NIFI_PORT}/nifi/"},
                 }
             },
         }
@@ -339,13 +395,28 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             logger.exception("Pebble (re)start failed: %s", e)
             raise ExitWithStatusError(constants.MSG_SERVICE_START_FAILED, ops.BlockedStatus)
 
+    def _check_nifi_ready(self) -> None:
+        """Verify NiFi HTTP endpoint is UP; raise if still starting."""
+        check = self._container.get_checks(constants.READY_CHECK_NAME).get(
+            constants.READY_CHECK_NAME
+        )
+        if not (check and check.status == ops.pebble.CheckStatus.UP):
+            raise ExitWithStatusError(constants.MSG_NIFI_STARTING, ops.MaintenanceStatus)
+
     def _reconcile(self, event) -> None:
         """Idempotent reconcile handler for all charm events.
 
+        All events funnel through here. The reconcile inspects the current
+        world state and converges to the correct unit status:
+
         1. Verify container connectivity.
         2. If secret-changed for our key, rotate (nifi.sh + push new properties).
-        3. Render and push nifi.properties and state-management.xml (if changed).
-        4. Apply pebble layer and (re)start the service as needed.
+        3. Check git-registry relation readiness.
+        4. Ensure storage directories exist.
+        5. Render and push nifi.properties and state-management.xml.
+        6. Apply pebble layer and (re)start the service as needed.
+        7. Wait for NiFi to become ready.
+        8. Configure or clean up the flow registry client via REST API.
         """
         try:
             self._check_pebble_connection()
@@ -358,21 +429,14 @@ class NifiK8SOperatorCharm(ops.CharmBase):
 
             # Restart when config drifted on a running service, or after rotation
             # (NiFi was stopped by the toolkit command and must be brought back).
-            self._add_layer_and_replan(restart=(config_changed and was_running) or rotated)
-
+            self._add_layer_and_replan(restart=config_changed and was_running or rotated)
+            self._check_nifi_ready()
+            self._reconcile_git_registry()
         except ExitWithStatusError as e:
             self.unit.status = e.status
             return
 
-        # Gate active on the Pebble HTTP check so we don't claim active while
-        # NiFi is still booting (replan() returns as soon as the process launches).
-        check = self._container.get_checks(constants.READY_CHECK_NAME).get(
-            constants.READY_CHECK_NAME
-        )
-        if check and check.status == ops.pebble.CheckStatus.UP:
-            self.unit.status = ops.ActiveStatus()
-        else:
-            self.unit.status = ops.MaintenanceStatus(constants.MSG_NIFI_STARTING)
+        self.unit.status = ops.ActiveStatus()
 
 
 if __name__ == "__main__":

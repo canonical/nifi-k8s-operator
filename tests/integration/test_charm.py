@@ -97,3 +97,48 @@ def test_nifi_create_and_list_process_group(juju: jubilant.Juju):
         pg["component"]["name"] for pg in json.loads(list_output).get("processGroups", [])
     ]
     assert pg_name in group_names, f"Process group not found: {group_names}"
+
+
+def test_nifi_accessible_after_rotation(juju: jubilant.Juju):
+    """NiFi REST API remains accessible after sensitive key rotation."""
+    # Rotate to a new key
+    new_key = make_sensitive_key()
+    juju.update_secret("nifi-sensitive-key", {constants.SENSITIVE_PROPS_KEY_FIELD: new_key})
+    juju.wait(jubilant.all_active, delay=10, timeout=300)
+
+    # Verify NiFi API is accessible
+    output = nifi_curl(juju, "/nifi-api/flow/status")
+    data = json.loads(output)
+    assert "controllerStatus" in data, f"NiFi API not accessible after rotation: {output[:500]}"
+
+
+def test_data_persists_across_rotation(juju: jubilant.Juju):
+    """Process groups created before rotation remain accessible after rotation."""
+    # Create a process group before rotation
+    pg_name = "rotation-persistence-test"
+    payload = json.dumps(
+        {
+            "revision": {"version": 0},
+            "component": {"name": pg_name, "position": {"x": 100, "y": 100}},
+        }
+    )
+    cmd = (
+        f"curl -fsS --max-time 10 -X POST"
+        f" -H 'Content-Type: application/json'"
+        f" -d '{payload}'"
+        f" http://localhost:{constants.NIFI_PORT}/nifi-api/process-groups/root/process-groups"
+    )
+    create_output = juju.ssh(UNIT, cmd, container=constants.CONTAINER_NAME)
+    assert pg_name in create_output, f"Failed to create process group: {create_output}"
+
+    # Rotate the key
+    new_key = make_sensitive_key()
+    juju.update_secret("nifi-sensitive-key", {constants.SENSITIVE_PROPS_KEY_FIELD: new_key})
+    juju.wait(jubilant.all_active, delay=10, timeout=300)
+
+    # Verify the process group still exists after rotation
+    list_output = nifi_curl(juju, "/nifi-api/process-groups/root/process-groups")
+    group_names = [
+        pg["component"]["name"] for pg in json.loads(list_output).get("processGroups", [])
+    ]
+    assert pg_name in group_names, f"Process group lost after rotation: {group_names}"

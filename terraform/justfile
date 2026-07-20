@@ -64,4 +64,4 @@ test:
 
     just apply "./test/test.tfvars"
 
-    juju wait-for model terraform --query="forEach(units, unit => (unit.workload-status == 'blocked' && unit.workload-message == 'Missing required config 'sensitive-props-key' (Juju user secret)'))"
+    juju wait-for model terraform --query='forEach(units, unit => (unit.workload-status == "blocked" && unit.workload-message == "Missing required config '\''sensitive-props-key'\'' (Juju user secret)"))'

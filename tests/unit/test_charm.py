@@ -11,9 +11,20 @@ from unittest.mock import patch
 import ops
 import ops.testing
 import pytest
-from conftest import SENSITIVE_KEY_VALUE
+from conftest import _SENSITIVE_KEY_SECRET, SENSITIVE_KEY_VALUE
 
 import constants
+from nifi_rest_client import NifiClientError, NifiConnectionError
+
+
+def _state_with_secret_and_relations(container, relations):
+    """Build a State with the sensitive-props-key secret and the given relations."""
+    return ops.testing.State(
+        containers=[container],
+        relations=relations,
+        secrets={_SENSITIVE_KEY_SECRET},
+        config={constants.SENSITIVE_PROPS_KEY_CONFIG: _SENSITIVE_KEY_SECRET.id},
+    )
 
 
 class TestReconcile:
@@ -68,7 +79,7 @@ class TestPebbleLayer:
         assert (check.level, check.threshold, check.http) == (
             ops.pebble.CheckLevel.READY,
             3,
-            {"url": f"http://localhost:{constants.NIFI_PORT}/nifi"},
+            {"url": f"http://localhost:{constants.NIFI_PORT}/nifi/"},
         )
 
 
@@ -178,15 +189,32 @@ class TestFailureModes:
 
 
 class TestGitRegistryRelation:
+    def test_no_relation_active_with_secret(self, context, state, container):
+        """Charm reaches ActiveStatus when no git-registry relation is present."""
+        state_out = context.run(context.on.pebble_ready(container), state)
+        assert state_out.unit_status == ops.ActiveStatus()
+
+    @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
+    def test_relation_ready_active_with_secret(
+        self, mock_create, context, state, container, git_registry_relation_ready
+    ):
+        """Charm reaches ActiveStatus when relation is ready and secret is set."""
+        mock_create.return_value = {"id": "test-id"}
+        state_in = dataclasses.replace(state, relations=frozenset([git_registry_relation_ready]))
+        state_out = context.run(context.on.pebble_ready(container), state_in)
+        assert state_out.unit_status == ops.ActiveStatus()
+
+    @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
     @pytest.mark.parametrize(
         "relation_fixture",
         [None, "git_registry_relation_ready"],
         ids=["no_relation", "relation_ready"],
     )
     def test_active_with_secret_regardless_of_git_relation(
-        self, request, context, state, container, relation_fixture
+        self, mock_create, request, context, state, container, relation_fixture
     ):
         """Charm reaches ActiveStatus when sensitive-props-key is set, with or without git-registry."""  # noqa: E501
+        mock_create.return_value = {"id": "test-id"}
         if relation_fixture:
             relation = request.getfixturevalue(relation_fixture)
             state_in = dataclasses.replace(state, relations=frozenset([relation]))
@@ -211,13 +239,168 @@ class TestGitRegistryRelation:
         state_out = context.run(context.on.pebble_ready(container), state_in)
         assert state_out.unit_status == ops.BlockedStatus(constants.MSG_SENSITIVE_KEY_MISSING)
 
+    @patch("nifi_rest_client.NifiRestClient.delete_registry_client")
     def test_relation_not_ready_goes_waiting(
-        self, context, state, container, git_registry_relation_empty
+        self, mock_delete, context, state, container, git_registry_relation_empty
     ):
         """Charm enters WaitingStatus when relation is joined but provider data is absent."""
+        mock_delete.return_value = False
         state_in = dataclasses.replace(state, relations=frozenset([git_registry_relation_empty]))
         state_out = context.run(context.on.pebble_ready(container), state_in)
         assert state_out.unit_status == ops.WaitingStatus(constants.MSG_GIT_REGISTRY_NOT_READY)
+
+    @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
+    def test_relation_ready_charm_reaches_active(
+        self, mock_create, context, container, git_registry_relation_ready
+    ):
+        """Charm reaches ActiveStatus and configures registry client when relation is ready."""
+        mock_create.return_value = {"id": "test-id"}
+        state_in = _state_with_secret_and_relations(container, [git_registry_relation_ready])
+        state_out = context.run(context.on.pebble_ready(container), state_in)
+        assert state_out.unit_status == ops.ActiveStatus()
+        mock_create.assert_called_once_with(
+            name=constants.FLOW_REGISTRY_CLIENT_NAME,
+            repository_url="https://github.com/example/nifi-flows.git",
+            branch="main",
+            token=None,
+        )
+
+    @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
+    def test_relation_with_credentials(
+        self, mock_create, context, container, git_registry_relation_with_credentials
+    ):
+        """Registry client is created with auth credentials when provided."""
+        mock_create.return_value = {"id": "test-id"}
+        state_in = _state_with_secret_and_relations(
+            container, [git_registry_relation_with_credentials]
+        )
+        state_out = context.run(context.on.pebble_ready(container), state_in)
+        assert state_out.unit_status == ops.ActiveStatus()
+        mock_create.assert_called_once_with(
+            name=constants.FLOW_REGISTRY_CLIENT_NAME,
+            repository_url="https://github.com/example/nifi-flows.git",
+            branch="develop",
+            token="ghp_test_token_123",
+        )
+
+    @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
+    def test_relation_gitlab(self, mock_create, context, container, git_registry_relation_gitlab):
+        """Registry client works with GitLab repositories."""
+        mock_create.return_value = {"id": "test-id"}
+        state_in = _state_with_secret_and_relations(container, [git_registry_relation_gitlab])
+        state_out = context.run(context.on.pebble_ready(container), state_in)
+        assert state_out.unit_status == ops.ActiveStatus()
+        mock_create.assert_called_once_with(
+            name=constants.FLOW_REGISTRY_CLIENT_NAME,
+            repository_url="https://gitlab.com/canonical/nifi-registry.git",
+            branch="main",
+            token=None,
+        )
+
+    @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
+    def test_connection_error_goes_maintenance(
+        self, mock_create, context, container, git_registry_relation_ready
+    ):
+        """Charm enters MaintenanceStatus when NiFi API is not yet reachable."""
+        mock_create.side_effect = NifiConnectionError("NiFi API not reachable: Connection refused")
+        state_in = _state_with_secret_and_relations(container, [git_registry_relation_ready])
+        state_out = context.run(context.on.pebble_ready(container), state_in)
+        assert state_out.unit_status == ops.MaintenanceStatus(constants.MSG_NIFI_STARTING)
+
+    @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
+    def test_api_error_goes_blocked(
+        self, mock_create, context, container, git_registry_relation_ready
+    ):
+        """Charm enters BlockedStatus when REST API call fails."""
+        mock_create.side_effect = NifiClientError(
+            "Registry client operation failed: 404 Not Found"
+        )
+        state_in = _state_with_secret_and_relations(container, [git_registry_relation_ready])
+        state_out = context.run(context.on.pebble_ready(container), state_in)
+        assert state_out.unit_status == ops.BlockedStatus(constants.MSG_GIT_REGISTRY_API_ERROR)
+
+    @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
+    def test_value_error_goes_blocked_with_specific_message(
+        self, mock_create, context, container, git_registry_relation_ready
+    ):
+        """Charm enters BlockedStatus with specific ValueError message surfaced."""
+        mock_create.side_effect = ValueError(
+            "GitLab flow registry clients require a personal access token"
+        )
+        state_in = _state_with_secret_and_relations(container, [git_registry_relation_ready])
+        state_out = context.run(context.on.pebble_ready(container), state_in)
+        assert state_out.unit_status == ops.BlockedStatus(
+            "GitLab flow registry clients require a personal access token"
+        )
+
+    def test_ssh_auth_goes_blocked(self, context, container, git_registry_relation_ssh):
+        """Charm enters BlockedStatus when git-integrator uses SSH authentication."""
+        state_in = _state_with_secret_and_relations(container, [git_registry_relation_ssh])
+        state_out = context.run(context.on.pebble_ready(container), state_in)
+        assert state_out.unit_status == ops.BlockedStatus(
+            constants.MSG_GIT_REGISTRY_SSH_UNSUPPORTED
+        )
+
+    @patch("nifi_rest_client.NifiRestClient.delete_registry_client")
+    def test_relation_broken_deletes_and_stays_active(
+        self, mock_delete, context, container, git_registry_relation_ready
+    ):
+        """Registry client is deleted when relation is broken; charm stays Active."""
+        mock_delete.return_value = True
+        state_in = _state_with_secret_and_relations(container, [git_registry_relation_ready])
+        state_out = context.run(context.on.relation_broken(git_registry_relation_ready), state_in)
+        assert state_out.unit_status == ops.ActiveStatus()
+        mock_delete.assert_called_once_with(constants.FLOW_REGISTRY_CLIENT_NAME)
+
+    @patch("nifi_rest_client.NifiRestClient.delete_registry_client")
+    def test_relation_broken_delete_failure_is_harmless(
+        self, mock_delete, context, container, git_registry_relation_ready
+    ):
+        """Delete failure on relation-broken is logged but doesn't crash."""
+        mock_delete.side_effect = NifiClientError(
+            "Registry client delete failed: 500 Server Error"
+        )
+        state_in = _state_with_secret_and_relations(container, [git_registry_relation_ready])
+        state_out = context.run(context.on.relation_broken(git_registry_relation_ready), state_in)
+        assert state_out.unit_status == ops.ActiveStatus()
+
+    @patch("nifi_rest_client.NifiRestClient.delete_registry_client")
+    def test_no_relation_delete_connection_error_is_harmless(
+        self, mock_delete, context, container
+    ):
+        """Delete failure due to NiFi being unreachable doesn't crash when no relation exists."""
+        mock_delete.side_effect = NifiConnectionError("NiFi API not reachable: Connection refused")
+        state_in = _state_with_secret_and_relations(container, [])
+        state_out = context.run(context.on.config_changed(), state_in)
+        assert state_out.unit_status == ops.ActiveStatus()
+
+    @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
+    def test_registry_client_updated_on_data_change(
+        self, mock_create, context, container, git_registry_relation_ready
+    ):
+        """Registry client is updated idempotently when relation data changes."""
+        mock_create.return_value = {"id": "test-id"}
+
+        state_in = _state_with_secret_and_relations(container, [git_registry_relation_ready])
+        state_after_first = context.run(context.on.pebble_ready(container), state_in)
+        assert state_after_first.unit_status == ops.ActiveStatus()
+
+        updated_relation = ops.testing.Relation(
+            constants.GIT_REGISTRY_RELATION,
+            remote_app_data={
+                "repository-url": "https://github.com/example/nifi-flows-v2.git",
+                "tracking-ref": "production",
+            },
+        )
+        state_with_update = _state_with_secret_and_relations(container, [updated_relation])
+        state_after_update = context.run(context.on.update_status(), state_with_update)
+        assert state_after_update.unit_status == ops.ActiveStatus()
+        assert mock_create.call_count == 2
+        assert (
+            mock_create.call_args.kwargs["repository_url"]
+            == "https://github.com/example/nifi-flows-v2.git"
+        )
+        assert mock_create.call_args.kwargs["branch"] == "production"
 
     def test_relation_ready_connection_info_accessible(
         self, context, state, container, git_registry_relation_ready

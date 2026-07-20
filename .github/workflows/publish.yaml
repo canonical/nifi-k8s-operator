@@ -27,6 +27,8 @@ jobs:
 
       - name: Upload charm package
         uses: canonical/charming-actions/upload-charm@2.7.0
+        permissions:
+          contents: write
         with:
           credentials: ${{ secrets.CHARMHUB_TOKEN }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -48,6 +50,8 @@ jobs:
 
       - name: Upload charm lib
         uses: canonical/charming-actions/release-libraries@2.7.0
+        permissions:
+          contents: write
         with:
           credentials: ${{ secrets.CHARMHUB_TOKEN }}
           github-token: ${{ secrets.GITHUB_TOKEN }}

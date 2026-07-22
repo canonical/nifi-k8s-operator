@@ -5,6 +5,6 @@ output "application" {
 
 output "requires" {
   value = {
-    git                = "git-registry"
+    git-registry = "git-registry"
   }
 }

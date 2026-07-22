@@ -3,3 +3,7 @@
 __pycache__/
 *.pyc
 .coverage
+
+.terraform/
+.terraform.*
+terraform.tfstate*

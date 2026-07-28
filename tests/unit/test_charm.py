@@ -112,6 +112,16 @@ class TestPebbleLayer:
             constants.WORKLOAD_USER,
             constants.WORKLOAD_GROUP,
         )
+        # override: replace drops the rock's baked service environment, so the
+        # layer must redeclare it: JAVA_HOME (the rock does not register the
+        # java alternative) and NIFI_LOG_DIR + NIFI_OVERRIDE_NIFIENV (logs to
+        # /var/log/nifi).
+        assert service.environment == {
+            "JAVA_HOME": constants.JAVA_HOME,
+            "NIFI_HOME": constants.NIFI_HOME,
+            "NIFI_LOG_DIR": constants.NIFI_LOG_DIR,
+            "NIFI_OVERRIDE_NIFIENV": "true",
+        }
 
         check = plan.checks[constants.READY_CHECK_NAME]
         assert (check.level, check.threshold, check.http) == (

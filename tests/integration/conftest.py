@@ -17,7 +17,7 @@ import constants
 REPO_ROOT = pathlib.Path(__file__).parent.parent.parent
 
 APP_NAME = "nifi-k8s"
-NIFI_IMAGE = "docker.io/apache/nifi:2.10.0"
+NIFI_IMAGE = "ghcr.io/canonical/nifi-rocks/nifi:2.10"
 UNIT = f"{APP_NAME}/0"
 
 

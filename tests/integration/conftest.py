@@ -3,11 +3,13 @@
 
 """Shared fixtures for NiFi K8s integration tests."""
 
+import json
 import os
 import pathlib
 import secrets
 import sys
 import time
+import urllib.request
 
 import jubilant
 import pytest
@@ -62,10 +64,37 @@ def make_sensitive_key() -> str:
     return secrets.token_urlsafe(32)
 
 
-def nifi_curl(juju: jubilant.Juju, path: str) -> str:
-    """Run a curl GET against the NiFi REST API inside the workload container."""
-    cmd = f"curl -fsS --max-time 10 http://localhost:{constants.NIFI_PORT}{path}"
-    return juju.ssh(UNIT, cmd, container=constants.CONTAINER_NAME)
+def _nifi_base_url(juju: jubilant.Juju) -> str:
+    """Return the NiFi REST API base URL, reachable from the test runner.
+
+    NiFi binds 0.0.0.0:8080 (nifi.web.http.host), so it is reachable on the
+    unit's pod address. The requests are made from the runner rather than by
+    shelling into the container, because the Canonical rock ships no HTTP
+    client (curl/wget) -- unlike the upstream apache/nifi image the tests
+    originally targeted.
+    """
+    address = juju.status().apps[APP_NAME].units[UNIT].address
+    return f"http://{address}:{constants.NIFI_PORT}"
+
+
+def nifi_get(juju: jubilant.Juju, path: str) -> str:
+    """GET the NiFi REST API from the test runner and return the response body."""
+    url = f"{_nifi_base_url(juju)}{path}"
+    with urllib.request.urlopen(url, timeout=10) as resp:  # noqa: S310 (fixed http scheme)
+        return resp.read().decode()
+
+
+def nifi_post(juju: jubilant.Juju, path: str, payload: dict) -> str:
+    """POST JSON to the NiFi REST API from the test runner and return the body."""
+    url = f"{_nifi_base_url(juju)}{path}"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310 (fixed http scheme)
+        return resp.read().decode()
 
 
 def get_nifi_sensitive_key(juju: jubilant.Juju) -> str:

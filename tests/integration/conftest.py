@@ -13,13 +13,15 @@ import urllib.request
 
 import jubilant
 import pytest
+import yaml
 
 import constants
 
 REPO_ROOT = pathlib.Path(__file__).parent.parent.parent
 
 APP_NAME = "nifi-k8s"
-NIFI_IMAGE = "ghcr.io/canonical/nifi-rocks/nifi:2.10"
+_charmcraft = yaml.safe_load((REPO_ROOT / "charmcraft.yaml").read_text())
+NIFI_IMAGE = _charmcraft["resources"]["nifi-image"]["upstream-source"]
 UNIT = f"{APP_NAME}/0"
 
 

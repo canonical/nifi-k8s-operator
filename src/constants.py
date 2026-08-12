@@ -7,30 +7,36 @@ CONTAINER_NAME = "nifi"
 SERVICE_NAME = "nifi"
 READY_CHECK_NAME = "nifi-ready"
 
-# The upstream apache/nifi image runs as the nifi user.
-# This will change to "ubuntu" when the Canonical rock replaces the upstream image.
-WORKLOAD_USER = "nifi"
-WORKLOAD_GROUP = "nifi"
+# The Canonical NiFi rock runs the workload as the base image's ubuntu user
+# (uid/gid 1000), which owns /opt/nifi and the /var/lib/nifi repositories.
+WORKLOAD_USER = "ubuntu"
+WORKLOAD_GROUP = "ubuntu"
 
-# TODO Match it to NIFI_HOME when switching to the Canonical rock image(/opt/nifi).
-# The upstream apache/nifi image uses /opt/nifi/nifi-current as NIFI_HOME,
-# which is a symlink to the actual versioned directory (e.g. /opt/nifi/nifi-2.9.0).
-NIFI_HOME = "/opt/nifi/nifi-current"
+# The rock installs NiFi directly at /opt/nifi (no nifi-current symlink).
+NIFI_HOME = "/opt/nifi"
 NIFI_PROPERTIES_PATH = f"{NIFI_HOME}/conf/nifi.properties"
 STATE_MANAGEMENT_XML_PATH = f"{NIFI_HOME}/conf/state-management.xml"
 
 NIFI_HTTP_HOST = "0.0.0.0"
 NIFI_PORT = 8080
 
-# Juju storage mount paths (defined in charmcraft.yaml)
-# Placed under NIFI_HOME to match upstream NiFi defaults.
+# Juju storage mount paths (defined in charmcraft.yaml). Absolute /var/lib/nifi
+# paths, matching the rock's default repository locations, so the storage mounts
+# line up without overriding any NiFi properties.
 DATA_DIR = "/var/lib/nifi/data"
 CONTENT_REPO_DIR = "/var/lib/nifi/content_repository"
 PROVENANCE_REPO_DIR = "/var/lib/nifi/provenance_repository"
 
-# TODO: Set JAVA_HOME when switching to the Canonical rock image.
-# The upstream apache/nifi image already provides JAVA_HOME via the base Eclipse Temurin image.
-# The rock will use: /usr/lib/jvm/java-21-openjdk-amd64
+# The rock installs openjdk-21-jre-headless via stage-packages, which does not
+# register the /usr/bin/java alternative, so nifi.sh cannot find Java on PATH.
+# JAVA_HOME must be set in the Pebble service environment or NiFi exits at start.
+JAVA_HOME = "/usr/lib/jvm/java-21-openjdk-amd64"
+
+# NiFi log directory. The rock pre-creates /var/log/nifi (owned ubuntu:ubuntu)
+# and it is not a Juju storage mount, so the workload can write to it directly.
+# bin/nifi-env.sh only honours NIFI_LOG_DIR when NIFI_OVERRIDE_NIFIENV is "true";
+# without that flag it silently falls back to $NIFI_HOME/logs.
+NIFI_LOG_DIR = "/var/log/nifi"
 
 # Juju config & secret schema
 SENSITIVE_PROPS_KEY_CONFIG = "sensitive-props-key"

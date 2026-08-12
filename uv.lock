@@ -318,6 +318,7 @@ format = [
 integration = [
     { name = "jubilant" },
     { name = "pytest" },
+    { name = "pyyaml" },
 ]
 lint = [
     { name = "codespell" },
@@ -342,6 +343,7 @@ format = [{ name = "ruff" }]
 integration = [
     { name = "jubilant" },
     { name = "pytest" },
+    { name = "pyyaml" },
 ]
 lint = [
     { name = "codespell" },

@@ -14,7 +14,7 @@ dependencies = [
 lint = ["ruff", "codespell"]
 format = ["ruff"]
 unit = ["coverage[toml]", "ops[testing]", "pytest"]
-integration = ["jubilant", "pytest"]
+integration = ["jubilant", "pytest", "pyyaml"]
 
 [tool.coverage.run]
 branch = true

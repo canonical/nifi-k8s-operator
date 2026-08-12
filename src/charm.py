@@ -359,6 +359,19 @@ class NifiK8SOperatorCharm(ops.CharmBase):
                     "startup": "enabled",
                     "user": constants.WORKLOAD_USER,
                     "group": constants.WORKLOAD_GROUP,
+                    # override: replace wipes the rock's baked service environment,
+                    # so it is redeclared here. JAVA_HOME is required or nifi.sh
+                    # cannot find Java (the rock does not register the java
+                    # alternative on PATH). NIFI_LOG_DIR + NIFI_OVERRIDE_NIFIENV
+                    # keep logs on /var/log/nifi; without the override
+                    # flag nifi-env.sh ignores NIFI_LOG_DIR and logs to
+                    # $NIFI_HOME/logs instead.
+                    "environment": {
+                        "JAVA_HOME": constants.JAVA_HOME,
+                        "NIFI_HOME": constants.NIFI_HOME,
+                        "NIFI_LOG_DIR": constants.NIFI_LOG_DIR,
+                        "NIFI_OVERRIDE_NIFIENV": "true",
+                    },
                 }
             },
             "checks": {

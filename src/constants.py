@@ -49,6 +49,7 @@ MSG_NIFI_STARTING = "NiFi is starting"
 MSG_SERVICE_START_FAILED = "Failed to (re)start NiFi service"
 MSG_CONFIG_WRITE_FAILED = "Failed to write NiFi configuration"
 MSG_GIT_REGISTRY_NOT_READY = "Waiting for git-registry relation data"
+MSG_INGRESS_NOT_READY = "Waiting for ingress URL"
 MSG_GIT_REGISTRY_API_ERROR = "Failed to configure NiFi flow registry client"
 MSG_GIT_REGISTRY_SSH_UNSUPPORTED = (
     "NiFi flow registry does not support SSH auth; "
@@ -57,6 +58,7 @@ MSG_GIT_REGISTRY_SSH_UNSUPPORTED = (
 
 # Relation names
 GIT_REGISTRY_RELATION = "git-registry"
+INGRESS_RELATION = "ingress"
 
 # NiFi flow registry client
 FLOW_REGISTRY_CLIENT_NAME = "juju-git-registry"

@@ -17,6 +17,10 @@ nifi.security.allow.anonymous.authentication=true
 nifi.web.http.host={{ http_host }}
 nifi.web.http.port={{ http_port }}
 
+# Reverse proxy. Populated from the `ingress` relation; empty when not related.
+nifi.web.proxy.host={{ proxy_host }}
+nifi.web.proxy.context.path={{ proxy_context_path }}
+
 # To encrypt passwords used inside the database (mandatory)
 nifi.sensitive.props.key={{ sensitive_props_key }}
 nifi.sensitive.props.algorithm=NIFI_PBKDF2_AES_GCM_256

@@ -66,6 +66,10 @@ requires:
     interface: git
     optional: true
     limit: 1
+  ingress:
+    interface: ingress
+    optional: true
+    limit: 1
 
 config:
   options:

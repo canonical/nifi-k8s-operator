@@ -6,9 +6,11 @@
 
 import hashlib
 import logging
+from urllib.parse import urlparse
 
 import charms.git_integrator.v0.git as git
 import ops
+from charms.traefik_k8s.v2.ingress import IngressPerAppRequirer
 
 import constants
 from nifi_rest_client import NifiClientError, NifiConnectionError, NifiRestClient
@@ -45,6 +47,15 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             callback=self._reconcile,
         )
 
+        # Set before the ingress requirer is built:
+        self.unit.set_ports(constants.NIFI_PORT)
+        self.ingress = IngressPerAppRequirer(
+            self,
+            relation_name=constants.INGRESS_RELATION,
+            port=constants.NIFI_PORT,
+            strip_prefix=True,
+        )
+
         for event in [
             self.on[constants.CONTAINER_NAME].pebble_ready,
             self.on.start,
@@ -52,6 +63,8 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             self.on.update_status,
             self.on.secret_changed,
             self.on[constants.GIT_REGISTRY_RELATION].relation_broken,
+            self.ingress.on.ready,
+            self.ingress.on.revoked,
         ]:
             self.framework.observe(event, self._reconcile)
 
@@ -118,6 +131,31 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         if self.git_registry.relations and not self.git_registry.is_ready():
             raise ExitWithStatusError(constants.MSG_GIT_REGISTRY_NOT_READY, ops.WaitingStatus)
 
+    def _check_ingress(self) -> None:
+        """If an ingress relation exists but no URL has been published yet, raise.
+
+        On revoke the relation is already excluded from the model, so this does
+        not stall the reconcile that clears the proxy properties.
+        """
+        if self.model.get_relation(constants.INGRESS_RELATION) and not self.ingress.url:
+            raise ExitWithStatusError(constants.MSG_INGRESS_NOT_READY, ops.WaitingStatus)
+
+    def _ingress_proxy_settings(self) -> tuple[str, str]:
+        """Derive (nifi.web.proxy.host, nifi.web.proxy.context.path) from the ingress URL.
+
+        Both are empty when there is no ingress.
+        """
+        url = self.ingress.url
+        if not url:
+            return "", ""
+
+        parsed = urlparse(url)
+        if not parsed.hostname:
+            return "", ""
+
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        return f"{parsed.hostname}:{port}", parsed.path.rstrip("/")
+
     def _rotate_sensitive_key(self, event) -> bool:
         """Run nifi.sh key rotation if *event* is a secret-changed for our key.
 
@@ -149,9 +187,14 @@ class NifiK8SOperatorCharm(ops.CharmBase):
                 user=constants.WORKLOAD_USER,
                 group=constants.WORKLOAD_GROUP,
             ).wait_output()
+            proxy_host, proxy_context_path = self._ingress_proxy_settings()
             self._container.push(
                 constants.NIFI_PROPERTIES_PATH,
-                self._renderer.render_nifi_properties(sensitive_props_key=new_key),
+                self._renderer.render_nifi_properties(
+                    sensitive_props_key=new_key,
+                    proxy_host=proxy_host,
+                    proxy_context_path=proxy_context_path,
+                ),
                 user=constants.WORKLOAD_USER,
                 group=constants.WORKLOAD_GROUP,
                 make_dirs=True,
@@ -281,9 +324,12 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         Returns True if the file was created or updated, False if unchanged.
         """
         sensitive_props_key = self._get_sensitive_props_key()
+        proxy_host, proxy_context_path = self._ingress_proxy_settings()
         try:
             rendered = self._renderer.render_nifi_properties(
                 sensitive_props_key=sensitive_props_key,
+                proxy_host=proxy_host,
+                proxy_context_path=proxy_context_path,
             )
         except RuntimeError as e:
             logger.exception("Failed to render nifi.properties: %s", e)
@@ -424,7 +470,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
 
         1. Verify container connectivity.
         2. If secret-changed for our key, rotate (nifi.sh + push new properties).
-        3. Check git-registry relation readiness.
+        3. Check git-registry and ingress relation readiness.
         4. Ensure storage directories exist.
         5. Render and push nifi.properties and state-management.xml.
         6. Apply pebble layer and (re)start the service as needed.
@@ -435,6 +481,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             self._check_pebble_connection()
             rotated = self._rotate_sensitive_key(event)
             self._check_git_registry()
+            self._check_ingress()
             self._ensure_storage_dirs()
             was_running = self._service_is_running()
             config_changed = self._write_nifi_properties()

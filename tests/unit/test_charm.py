@@ -706,8 +706,8 @@ class TestIngressRelation:
 
         state_out = context.run(context.on.pebble_ready(container), state)
 
-        assert (
-            "nifi.web.proxy.host=nifi.example.com:8443\n" in self._properties(context, state_out)
+        assert "nifi.web.proxy.host=nifi.example.com:8443\n" in self._properties(
+            context, state_out
         )
 
     def test_relation_without_url_goes_waiting(self, context, container):

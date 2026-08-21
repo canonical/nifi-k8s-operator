@@ -82,9 +82,7 @@ def test_nifi_create_and_list_process_group(juju: jubilant.Juju):
         "component": {"name": pg_name, "position": {"x": 0, "y": 0}},
     }
 
-    create_output = nifi_post(
-        juju, "/nifi-api/process-groups/root/process-groups", payload
-    )
+    create_output = nifi_post(juju, "/nifi-api/process-groups/root/process-groups", payload)
     assert pg_name in create_output, f"Failed to create process group: {create_output}"
 
     list_output = nifi_get(juju, "/nifi-api/process-groups/root/process-groups")
@@ -115,9 +113,7 @@ def test_data_persists_across_rotation(juju: jubilant.Juju):
         "revision": {"version": 0},
         "component": {"name": pg_name, "position": {"x": 100, "y": 100}},
     }
-    create_output = nifi_post(
-        juju, "/nifi-api/process-groups/root/process-groups", payload
-    )
+    create_output = nifi_post(juju, "/nifi-api/process-groups/root/process-groups", payload)
     assert pg_name in create_output, f"Failed to create process group: {create_output}"
 
     # Rotate the key

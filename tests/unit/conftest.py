@@ -329,11 +329,6 @@ def rotation_container_factory(tmp_path):
     return _make
 
 
-# ---------------------------------------------------------------------------
-# ingress relation fixtures
-# ---------------------------------------------------------------------------
-
-
 def make_ingress_relation(url: str | None = None) -> ops.testing.Relation:
     """Build an ingress relation, with the provider's URL published unless url is None."""
     remote_app_data = {"ingress": json.dumps({"url": url})} if url else {}

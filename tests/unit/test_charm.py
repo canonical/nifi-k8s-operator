@@ -11,7 +11,7 @@ from unittest.mock import patch
 import ops
 import ops.testing
 import pytest
-from conftest import _SENSITIVE_KEY_SECRET, SENSITIVE_KEY_VALUE
+from conftest import _SENSITIVE_KEY_SECRET, SENSITIVE_KEY_VALUE, make_ingress_relation
 
 import constants
 from nifi_rest_client import NifiClientError, NifiConnectionError
@@ -653,3 +653,82 @@ class TestSensitivePropsKeyRotation:
         assert state_out.unit_status == ops.BlockedStatus(constants.MSG_KEY_ROTATION_FAILED)
         content = container.mounts["conf"].source.joinpath("nifi.properties").read_text()
         assert f"nifi.sensitive.props.key={SENSITIVE_KEY_VALUE}" in content
+
+
+class TestIngressRelation:
+    @staticmethod
+    def _properties(context, state_out):
+        root = state_out.get_container(constants.CONTAINER_NAME).get_filesystem(context)
+        return (root / constants.NIFI_PROPERTIES_PATH.lstrip("/")).read_text()
+
+    def test_no_relation_leaves_proxy_properties_empty(self, context, state, container):
+        """Without ingress, both proxy properties render empty."""
+        state_out = context.run(context.on.pebble_ready(container), state)
+        content = self._properties(context, state_out)
+        assert "nifi.web.proxy.host=\n" in content
+        assert "nifi.web.proxy.context.path=\n" in content
+
+    def test_path_routing_sets_host_and_context_path(self, context, container):
+        """A path-routing provider (traefik) populates both proxy properties."""
+        relation = make_ingress_relation("http://10.0.0.1/mymodel-nifi-k8s")
+        state = _state_with_secret_and_relations(container, [relation])
+
+        state_out = context.run(context.on.pebble_ready(container), state)
+
+        content = self._properties(context, state_out)
+        assert "nifi.web.proxy.host=10.0.0.1:80\n" in content
+        assert "nifi.web.proxy.context.path=/mymodel-nifi-k8s\n" in content
+
+    def test_host_routing_leaves_context_path_empty(self, context, container):
+        """A host-routing provider (nginx) sets only the proxy host."""
+        relation = make_ingress_relation("http://nifi.example.com/")
+        state = _state_with_secret_and_relations(container, [relation])
+
+        state_out = context.run(context.on.pebble_ready(container), state)
+
+        content = self._properties(context, state_out)
+        assert "nifi.web.proxy.host=nifi.example.com:80\n" in content
+        assert "nifi.web.proxy.context.path=\n" in content
+
+    def test_https_url_without_port_defaults_to_443(self, context, container):
+        """An https URL with no explicit port is advertised on 443."""
+        relation = make_ingress_relation("https://nifi.example.com/")
+        state = _state_with_secret_and_relations(container, [relation])
+
+        state_out = context.run(context.on.pebble_ready(container), state)
+
+        assert "nifi.web.proxy.host=nifi.example.com:443\n" in self._properties(context, state_out)
+
+    def test_explicit_port_is_preserved(self, context, container):
+        """A URL with an explicit port uses that port, not the scheme default."""
+        relation = make_ingress_relation("http://nifi.example.com:8443/")
+        state = _state_with_secret_and_relations(container, [relation])
+
+        state_out = context.run(context.on.pebble_ready(container), state)
+
+        assert "nifi.web.proxy.host=nifi.example.com:8443\n" in self._properties(
+            context, state_out
+        )
+
+    def test_relation_without_url_goes_waiting(self, context, container):
+        """Relation created but no URL published yet leaves the unit waiting."""
+        relation = make_ingress_relation()
+        state = _state_with_secret_and_relations(container, [relation])
+
+        state_out = context.run(context.on.pebble_ready(container), state)
+
+        assert state_out.unit_status == ops.WaitingStatus(constants.MSG_INGRESS_NOT_READY)
+
+    def test_revoked_clears_proxy_properties(self, context, container):
+        """Removing the ingress relation clears both proxy properties."""
+        relation = make_ingress_relation("http://10.0.0.1/mymodel-nifi-k8s")
+        state = _state_with_secret_and_relations(container, [relation])
+        state_after = context.run(context.on.pebble_ready(container), state)
+        assert "nifi.web.proxy.host=10.0.0.1:80\n" in self._properties(context, state_after)
+
+        state_out = context.run(context.on.relation_broken(relation), state_after)
+
+        content = self._properties(context, state_out)
+        assert "nifi.web.proxy.host=\n" in content
+        assert "nifi.web.proxy.context.path=\n" in content
+        assert state_out.unit_status == ops.ActiveStatus()

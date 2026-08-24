@@ -1,6 +1,7 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
+import json
 from unittest.mock import MagicMock, patch
 
 import ops
@@ -326,6 +327,15 @@ def rotation_container_factory(tmp_path):
         )
 
     return _make
+
+
+def make_ingress_relation(url: str | None = None) -> ops.testing.Relation:
+    """Build an ingress relation, with the provider's URL published unless url is None."""
+    remote_app_data = {"ingress": json.dumps({"url": url})} if url else {}
+    return ops.testing.Relation(
+        constants.INGRESS_RELATION,
+        remote_app_data=remote_app_data,
+    )
 
 
 @pytest.fixture(autouse=True)

@@ -6,5 +6,6 @@ output "application" {
 output "requires" {
   value = {
     git-registry = "git-registry"
+    ingress      = "ingress"
   }
 }

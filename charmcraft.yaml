@@ -52,7 +52,9 @@ resources:
   nifi-image:
     type: oci-image
     description: Canonical Apache NiFi rock
-    upstream-source: ghcr.io/canonical/nifi-rocks/nifi:2.10
+    # Temporary non-root rebuild pending canonical/nifi-rocks#3; revert to
+    # ghcr.io/canonical/nifi-rocks/nifi:2.10 once the non-root rock is published.
+    upstream-source: docker.io/edeusebio85/nifi:2.10-nonroot
 
 storage:
   nifi-data:

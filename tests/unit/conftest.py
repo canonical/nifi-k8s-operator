@@ -41,27 +41,6 @@ _NIFI_READY_LAYER = ops.pebble.Layer(
 )
 
 
-_CHOWN_EXEC = ops.testing.Exec(
-    [
-        "chown",
-        "-R",
-        f"{constants.WORKLOAD_USER}:{constants.WORKLOAD_GROUP}",
-        constants.DATA_DIR,
-        constants.CONTENT_REPO_DIR,
-        constants.PROVENANCE_REPO_DIR,
-    ],
-)
-
-# stat execs for each mount root — simulate root ownership so chown is triggered on first boot.
-_STAT_EXECS = {
-    ops.testing.Exec(
-        ["stat", "-c", "%U:%G", root],
-        stdout="root:root\n",
-    )
-    for root in [constants.DATA_DIR, constants.CONTENT_REPO_DIR, constants.PROVENANCE_REPO_DIR]
-}
-
-
 @pytest.fixture()
 def container():
     return ops.testing.Container(
@@ -69,7 +48,6 @@ def container():
         can_connect=True,
         # Pre-populate the plan so check_infos passes the consistency check.
         layers={"nifi-check": _NIFI_READY_LAYER},
-        execs={_CHOWN_EXEC, *_STAT_EXECS},
         check_infos={
             ops.testing.CheckInfo(
                 constants.READY_CHECK_NAME,
@@ -310,7 +288,7 @@ def rotation_container_factory(tmp_path):
             can_connect=True,
             service_statuses={constants.SERVICE_NAME: ops.pebble.ServiceStatus.ACTIVE},
             layers={"nifi-check": _NIFI_READY_LAYER, "nifi": service_layer},
-            execs={rotate_exec, _CHOWN_EXEC, *_STAT_EXECS},
+            execs={rotate_exec},
             check_infos={
                 ops.testing.CheckInfo(
                     constants.READY_CHECK_NAME,

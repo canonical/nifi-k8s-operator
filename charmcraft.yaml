@@ -21,6 +21,8 @@ base: ubuntu@26.04
 platforms:
   amd64:
 
+charm-user: non-root
+
 parts:
   charm:
     plugin: uv
@@ -36,6 +38,8 @@ parts:
 containers:
   nifi:
     resource: nifi-image
+    uid: 584792
+    gid: 584792
     mounts:
       - storage: nifi-data
         location: /var/lib/nifi/data

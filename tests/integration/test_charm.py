@@ -7,7 +7,9 @@ import json
 import pathlib
 
 import jubilant
+import lightkube
 import pytest
+import yaml
 from conftest import (
     APP_NAME,
     NIFI_IMAGE,
@@ -16,8 +18,16 @@ from conftest import (
     nifi_get,
     nifi_post,
 )
+from helpers import (
+    assert_security_context,
+    generate_container_securitycontext_map,
+    get_pod_names,
+)
 
 import constants
+
+CHARMCRAFT = yaml.safe_load(pathlib.Path("./charmcraft.yaml").read_text())
+CONTAINERS_SECURITY_CONTEXT_MAP = generate_container_securitycontext_map(CHARMCRAFT)
 
 
 def test_charm_blocked_without_sensitive_props_key(juju: jubilant.Juju, nifi_charm: pathlib.Path):
@@ -44,6 +54,23 @@ def test_charm_active_with_sensitive_props_key(juju: jubilant.Juju):
 
     status = juju.status()
     assert status.apps[APP_NAME].app_status.current == "active"
+
+
+@pytest.mark.parametrize("container_name", list(CONTAINERS_SECURITY_CONTEXT_MAP.keys()))
+def test_container_security_context(
+    juju: jubilant.Juju,
+    container_name: str,
+) -> None:
+    """Container spec defines the security context with the expected non-root UID/GID."""
+    lightkube_client = lightkube.Client()
+    pod_name = get_pod_names(juju.model, APP_NAME)[0]
+    assert_security_context(
+        lightkube_client,
+        pod_name,
+        container_name,
+        CONTAINERS_SECURITY_CONTEXT_MAP,
+        juju.model,
+    )
 
 
 def test_pebble_health_check_up(juju: jubilant.Juju):

@@ -7,7 +7,9 @@ import json
 import pathlib
 
 import jubilant
+import lightkube
 import pytest
+import yaml
 from conftest import (
     APP_NAME,
     NIFI_IMAGE,
@@ -16,8 +18,17 @@ from conftest import (
     nifi_get,
     nifi_post,
 )
+from helpers import (
+    assert_security_context,
+    generate_container_securitycontext_map,
+    get_pod_names,
+)
+from lightkube.resources.core_v1 import Pod
 
 import constants
+
+CHARMCRAFT = yaml.safe_load(pathlib.Path("./charmcraft.yaml").read_text())
+CONTAINERS_SECURITY_CONTEXT_MAP = generate_container_securitycontext_map(CHARMCRAFT)
 
 
 def test_charm_blocked_without_sensitive_props_key(juju: jubilant.Juju, nifi_charm: pathlib.Path):
@@ -44,6 +55,55 @@ def test_charm_active_with_sensitive_props_key(juju: jubilant.Juju):
 
     status = juju.status()
     assert status.apps[APP_NAME].app_status.current == "active"
+
+
+@pytest.mark.parametrize("container_name", list(CONTAINERS_SECURITY_CONTEXT_MAP.keys()))
+def test_container_security_context(
+    juju: jubilant.Juju,
+    container_name: str,
+) -> None:
+    """Container spec defines the security context with the expected non-root UID/GID."""
+    lightkube_client = lightkube.Client()
+    pod_name = get_pod_names(lightkube_client, juju.model, APP_NAME)[0]
+    assert_security_context(
+        lightkube_client,
+        pod_name,
+        container_name,
+        CONTAINERS_SECURITY_CONTEXT_MAP,
+        juju.model,
+    )
+
+
+def test_pod_uses_rootless_fsgroup(juju: jubilant.Juju) -> None:
+    """The pod security context uses Juju's rootless fs group (gid 170).
+
+    Juju group-owns the storage volumes by this gid and runs the workload with
+    it as a supplemental group, which is what makes the mounts writable by the
+    non-root user without any chown.
+    """
+    lightkube_client = lightkube.Client()
+    pod_name = get_pod_names(lightkube_client, juju.model, APP_NAME)[0]
+    pod = lightkube_client.get(Pod, pod_name, namespace=juju.model)
+    assert pod.spec.securityContext.fsGroup == 170
+
+
+def test_workload_writable_as_non_root(juju: jubilant.Juju) -> None:
+    """The workload runs as _daemon_ (584792) and can write to every repository mount."""
+    uid = juju.ssh(UNIT, "id -u", container=constants.CONTAINER_NAME).strip()
+    assert uid == "584792"
+
+    for path in (
+        constants.DATA_DIR,
+        constants.CONTENT_REPO_DIR,
+        constants.PROVENANCE_REPO_DIR,
+    ):
+        probe = f"{path}/.charm-write-probe"
+        output = juju.ssh(
+            UNIT,
+            f"touch {probe} && rm {probe} && echo WRITABLE",
+            container=constants.CONTAINER_NAME,
+        )
+        assert "WRITABLE" in output
 
 
 def test_pebble_health_check_up(juju: jubilant.Juju):

@@ -21,6 +21,13 @@ base: ubuntu@26.04
 platforms:
   amd64:
 
+charm-user: non-root
+
+# charm-user and the workload container uid/gid require a controller that
+# supports rootless charms (securityContext + fsGroup handling).
+assumes:
+  - juju >= 3.6
+
 parts:
   charm:
     plugin: uv
@@ -36,6 +43,8 @@ parts:
 containers:
   nifi:
     resource: nifi-image
+    uid: 584792
+    gid: 584792
     mounts:
       - storage: nifi-data
         location: /var/lib/nifi/data
@@ -48,7 +57,9 @@ resources:
   nifi-image:
     type: oci-image
     description: Canonical Apache NiFi rock
-    upstream-source: ghcr.io/canonical/nifi-rocks/nifi:2.10
+    # Temporary non-root rebuild pending canonical/nifi-rocks#3; revert to
+    # ghcr.io/canonical/nifi-rocks/nifi:2.10 once the non-root rock is published.
+    upstream-source: docker.io/edeusebio85/nifi:2.10-nonroot
 
 storage:
   nifi-data:

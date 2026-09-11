@@ -263,7 +263,13 @@ class NifiK8SOperatorCharm(ops.CharmBase):
 
     # TODO: Refactor to potentially remove this method once nifi rock is available.
     def _ensure_storage_dirs(self) -> None:
-        """Create NiFi storage directories if they don't already exist."""
+        """Create NiFi storage subdirectories if they don't already exist.
+
+        Juju mounts the storage volumes group-owned by the rootless fs group
+        (gid 170) and group-writable, and the workload runs as _daemon_ with
+        that supplemental group, so the repositories are writable without any
+        privileged chown (which a non-root Pebble could not perform anyway).
+        """
         dirs = [
             f"{constants.DATA_DIR}/database_repository",
             f"{constants.DATA_DIR}/flowfile_repository",
@@ -271,12 +277,6 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             constants.CONTENT_REPO_DIR,
             constants.PROVENANCE_REPO_DIR,
         ]
-        mount_roots = [
-            constants.DATA_DIR,
-            constants.CONTENT_REPO_DIR,
-            constants.PROVENANCE_REPO_DIR,
-        ]
-        expected_owner = f"{constants.WORKLOAD_USER}:{constants.WORKLOAD_GROUP}"
         try:
             for d in dirs:
                 if not self._container.exists(d):
@@ -286,22 +286,6 @@ class NifiK8SOperatorCharm(ops.CharmBase):
                         group=constants.WORKLOAD_GROUP,
                         make_parents=True,
                     )
-
-            needs_chown = any(
-                self._container.exec(["stat", "-c", "%U:%G", root]).wait_output()[0].strip()
-                != expected_owner
-                for root in mount_roots
-                if self._container.exists(root)
-            )
-            if needs_chown:
-                self._container.exec(
-                    [
-                        "chown",
-                        "-R",
-                        expected_owner,
-                        *mount_roots,
-                    ]
-                ).wait()
         except ops.pebble.Error as e:
             logger.exception("Failed to create storage directories: %s", e)
             raise ExitWithStatusError(constants.MSG_CONFIG_WRITE_FAILED, ops.BlockedStatus)

@@ -3,7 +3,6 @@
 
 """Utilities for testing security context and user privileges in charms."""
 
-import subprocess
 from typing import Dict, TypedDict
 
 import lightkube
@@ -16,12 +15,10 @@ class ContainerSecurityContext(TypedDict):
     Attributes:
         runAsUser (int | None): The UID to run the container's entry point as.
         runAsGroup (int | None): The GID to run the container's entry point as.
-        runAsNonRoot (bool | None): Whether the container must run as a non-root user.
     """
 
     runAsUser: int | None  # noqa N815
     runAsGroup: int | None  # noqa N815
-    runAsNonRoot: bool | None  # noqa N815
 
 
 def generate_container_securitycontext_map(
@@ -50,31 +47,25 @@ def generate_container_securitycontext_map(
     return c_uid_map
 
 
-def get_pod_names(model: str, application_name: str) -> list[str]:
+def get_pod_names(client: lightkube.Client, model: str, application_name: str) -> list[str]:
     """Retrieve names of all pods belonging to a specific Juju application.
 
     Args:
+        client (lightkube.Client): A configured lightkube client.
         model (str): The Juju model name (Kubernetes namespace).
         application_name (str): The Juju application name.
 
     Returns:
         list[str]: A list of matching pod names, empty if none are found.
     """
-    cmd = [
-        "kubectl",
-        "get",
-        "pods",
-        f"-n{model}",
-        f"-lapp.kubernetes.io/name={application_name}",
-        "--no-headers",
-        "-o=custom-columns=NAME:.metadata.name",
+    return [
+        pod.metadata.name
+        for pod in client.list(
+            Pod,
+            namespace=model,
+            labels={"app.kubernetes.io/name": application_name},
+        )
     ]
-    proc = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-    )
-    stdout = proc.stdout.decode("utf8")
-    return stdout.split()
 
 
 def assert_security_context(

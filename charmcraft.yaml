@@ -23,6 +23,11 @@ platforms:
 
 charm-user: non-root
 
+# charm-user and the workload container uid/gid require a controller that
+# supports rootless charms (securityContext + fsGroup handling).
+assumes:
+  - juju >= 3.6
+
 parts:
   charm:
     plugin: uv

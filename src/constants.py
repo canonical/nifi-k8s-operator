@@ -7,10 +7,10 @@ CONTAINER_NAME = "nifi"
 SERVICE_NAME = "nifi"
 READY_CHECK_NAME = "nifi-ready"
 
-# The Canonical NiFi rock runs the workload as the base image's ubuntu user
-# (uid/gid 1000), which owns /opt/nifi and the /var/lib/nifi repositories.
-WORKLOAD_USER = "ubuntu"
-WORKLOAD_GROUP = "ubuntu"
+# The Canonical NiFi rock runs the workload as the shared non-root user
+# _daemon_ (uid/gid 584792), which owns /opt/nifi and the /var/lib/nifi repositories.
+WORKLOAD_USER = "_daemon_"
+WORKLOAD_GROUP = "_daemon_"
 
 # The rock installs NiFi directly at /opt/nifi (no nifi-current symlink).
 NIFI_HOME = "/opt/nifi"
@@ -32,7 +32,7 @@ PROVENANCE_REPO_DIR = "/var/lib/nifi/provenance_repository"
 # JAVA_HOME must be set in the Pebble service environment or NiFi exits at start.
 JAVA_HOME = "/usr/lib/jvm/java-21-openjdk-amd64"
 
-# NiFi log directory. The rock pre-creates /var/log/nifi (owned ubuntu:ubuntu)
+# NiFi log directory. The rock pre-creates /var/log/nifi (owned _daemon_:_daemon_)
 # and it is not a Juju storage mount, so the workload can write to it directly.
 # bin/nifi-env.sh only honours NIFI_LOG_DIR when NIFI_OVERRIDE_NIFIENV is "true";
 # without that flag it silently falls back to $NIFI_HOME/logs.

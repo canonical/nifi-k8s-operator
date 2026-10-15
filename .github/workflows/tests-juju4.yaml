@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
   schedule:
-    - cron: '0 5 * * *'
+    - cron: "17 2 * * *"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -43,39 +43,7 @@ jobs:
       - name: Run integration tests
         run: just integration
 
-      - name: Collect diagnostics on failure
+      - name: Get system state (if failure)
         if: failure()
-        shell: bash
-        run: |
-          set +e
+        run: just get-system-state
 
-          echo "=== Juju version ==="
-          juju version
-
-          echo "=== Juju controllers ==="
-          juju controllers
-
-          echo "=== Juju models ==="
-          juju models
-
-          echo "=== Juju status ==="
-          juju status --model test --relations --storage
-
-          echo "=== Kubernetes status ==="
-          sudo k8s status
-
-          echo "=== Kubernetes pods ==="
-          sudo k8s kubectl get pods -A -o wide
-
-          echo "=== Persistent volume claims ==="
-          sudo k8s kubectl get pvc -A
-
-          echo "=== Persistent volumes ==="
-          sudo k8s kubectl get pv
-
-          echo "=== Storage classes ==="
-          sudo k8s kubectl get storageclass
-
-          echo "=== Recent Kubernetes events ==="
-          sudo k8s kubectl get events -A \
-            --sort-by=.metadata.creationTimestamp

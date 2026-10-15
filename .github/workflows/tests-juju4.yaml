@@ -3,11 +3,11 @@ name: Juju 4.x Integration Tests
 on:
   workflow_dispatch:
 
-  # push:
-  #   branches:
-  #     - add-juju-4-integration-tests
-  #   paths-ignore:
-  #     - '**.md'
+  push:
+    branches:
+      - add-juju-4-integration-tests
+    paths-ignore:
+      - '**.md'
 
   # schedule:
   #   - cron: '0 5 * * *'

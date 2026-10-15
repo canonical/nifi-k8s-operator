@@ -6,7 +6,6 @@ on:
   push:
     branches:
       - add-juju-4-integration-tests
-
   schedule:
     - cron: "17 2 * * *"
 

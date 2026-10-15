@@ -3,6 +3,10 @@ name: Juju 4.x Integration Tests
 on:
   workflow_dispatch:
 
+  push:
+    branches:
+      - add-juju-4-integration-tests
+
   schedule:
     - cron: "17 2 * * *"
 

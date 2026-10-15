@@ -3,9 +3,6 @@ name: Juju 4.x Integration Tests
 on:
   workflow_dispatch:
 
-  push:
-    branches:
-      - add-juju-4-integration-tests
   schedule:
     - cron: "17 2 * * *"
 
@@ -40,8 +37,23 @@ jobs:
 
           uv tool install tox
 
-      - name: Verify Juju version
-        run: juju version
+      - name: Verify Juju version (client and controller)
+        run: |
+          set -euo pipefail 
+          echo "___ Juju Client ___"
+          JUJU_VERSION="$(juju version)"
+          echo "${JUJU_VERSION}"
+          
+          if [[ ! "${JUJU_VERSION}" =~ ^4\. ]]; then
+            echo "::error::Expected Juju 4.x client, got ${JUJU_VERSION}"
+            exit 1
+          fi
+          
+          echo "___ Juju Controllers ___"
+          juju controllers --refresh
+          
+          echo "___ Controller Model Agent Version ___"
+          juju model-config -m controller agent-version
 
       - name: Run integration tests
         run: just integration

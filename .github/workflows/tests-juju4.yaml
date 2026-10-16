@@ -6,9 +6,9 @@ on:
   schedule:
     - cron: "17 2 * * *"
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+permissions:
+  contents: read
+  issues: write
 
 jobs:
   integration-tests:
@@ -29,7 +29,7 @@ jobs:
 
           sudo -E concierge prepare \
             -p k8s \
-            --juju-channel=4/edge \
+            --juju-channel=4.1/edge \
             --extra-snaps=astral-uv,just
 
           mkdir -p ~/.kube
@@ -38,27 +38,55 @@ jobs:
           uv tool install tox
 
       - name: Verify Juju version (client and controller)
+        shell: bash
         run: |
-          set -euo pipefail 
+          set -euo pipefail
+
           echo "___ Juju Client ___"
           JUJU_VERSION="$(juju version)"
           echo "${JUJU_VERSION}"
-          
-          if [[ ! "${JUJU_VERSION}" =~ ^4\. ]]; then
-            echo "::error::Expected Juju 4.x client, got ${JUJU_VERSION}"
-            exit 1
-          fi
-          
+
           echo "___ Juju Controllers ___"
           juju controllers --refresh
-          
+
           echo "___ Controller Model Agent Version ___"
           juju model-config -m controller agent-version
 
       - name: Run integration tests
+        id: integration
         run: just integration
 
       - name: Get system state (if failure)
         if: failure()
         run: just get-system-state
 
+      - name: Create or update the failure issue
+        if: ${{ always() && steps.integration.outcome == 'failure' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TEST_RESULT: ${{ steps.integration.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "$TEST_RESULT" != "failure" ]; then
+            echo "Tests did not fail; nothing to report."
+            exit 0
+          fi
+
+          existing=$(gh issue list -R "$GITHUB_REPOSITORY" \
+            --label juju-4 --state open --limit 1 \
+            --json number --jq '.[0].number // empty')
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" -R "$GITHUB_REPOSITORY" \
+              --body "Juju 4.x integration tests failed: $RUN_URL"
+          else
+            gh issue create -R "$GITHUB_REPOSITORY" \
+              --label juju-4 --label bug \
+              --title "Juju 4.x integration tests failing" \
+              --body "The Juju 4.x integration tests failed. Please investigate.
+
+          Workflow run: $RUN_URL"
+          fi

@@ -1,0 +1,37 @@
+# Copyright 2026 Canonical Ltd.
+# See LICENSE file for licensing details.
+
+name: Juju 4.x Integration Tests
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    # Run weekly on Mondays at 02:17 UTC.
+    - cron: "17 2 * * 1"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  integration-tests:
+    uses: canonical/workflows-team/.github/workflows/juju-nightly.yaml@main
+    with:
+      juju-channel: 4.1/edge
+      provider: k8s
+      runner: ubuntu-26.04
+      timeout-minutes: 60
+      extra-snaps: astral-uv,just
+
+      test-commands: >-
+        [
+          "just integration"
+        ]
+
+      setup-command: |
+        set -euo pipefail
+
+        uv tool install tox
+
+      issue-label: juju-4

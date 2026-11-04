@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   integration-tests:
-    uses: ./.github/workflows/juju-nightly-integration.yaml
+    uses: canonical/workflows-team/.github/workflows/juju-nightly.yaml@main
     with:
       juju-channel: 4.1/edge
       provider: k8s

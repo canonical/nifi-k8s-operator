@@ -11,12 +11,13 @@ on:
     - cron: "17 2 * * 1"
 
 permissions:
+  actions: read
   contents: read
   issues: write
 
 jobs:
   integration-tests:
-    uses: canonical/workflows-team/.github/workflows/juju-nightly.yaml@main
+    uses: canonical/workflows-team/.github/workflows/juju-testing.yaml@main
     with:
       juju-channel: 4.1/edge
       provider: k8s
@@ -34,4 +35,4 @@ jobs:
 
         uv tool install tox
 
-      issue-label: juju-4
+      issue-label: juju-4, bug

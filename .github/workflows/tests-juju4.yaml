@@ -35,4 +35,4 @@ jobs:
 
         uv tool install tox
 
-      issue-label: juju-4, bug
+      issue-labels: juju-4,bug

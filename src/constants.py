@@ -17,6 +17,21 @@ NIFI_HOME = "/opt/nifi"
 NIFI_PROPERTIES_PATH = f"{NIFI_HOME}/conf/nifi.properties"
 STATE_MANAGEMENT_XML_PATH = f"{NIFI_HOME}/conf/state-management.xml"
 
+# TLS files for NiFi. They're written into the container's own filesystem, not a
+# volume, so a pod restart removes them; reconcile writes them again from the
+# library's secrets. Writing them never restarts NiFi.
+TLS_DIR = f"{NIFI_HOME}/conf/tls"
+TLS_CERT_PATH = f"{TLS_DIR}/cert.pem"
+TLS_KEY_PATH = f"{TLS_DIR}/key.pem"
+TLS_CA_PATH = f"{TLS_DIR}/ca.pem"
+
+# The charm's own client certificate stays in the charm container, never in
+# the workload. The directory is next to the charm code, under the unit's agent dir.
+CLIENT_TLS_DIR_NAME = "nifi-client-tls"
+
+# X.509 limit on a certificate's common name (RFC 5280, ub-common-name).
+TLS_COMMON_NAME_MAX_LENGTH = 64
+
 NIFI_HTTP_HOST = "0.0.0.0"
 NIFI_PORT = 8080
 
@@ -48,6 +63,12 @@ MSG_PEBBLE_NOT_READY = "Cannot connect to workload container"
 MSG_NIFI_STARTING = "NiFi is starting"
 MSG_SERVICE_START_FAILED = "Failed to (re)start NiFi service"
 MSG_CONFIG_WRITE_FAILED = "Failed to write NiFi configuration"
+MSG_TLS_WAITING = "Waiting for TLS certificates"
+MSG_TLS_DENIED = "TLS certificate request denied: {reason}"
+MSG_TLS_WRITE_FAILED = "Failed to write TLS certificate files"
+MSG_TLS_NAME_TOO_LONG = (
+    "Application name too long for a TLS certificate; redeploy with a shorter name"
+)
 MSG_GIT_REGISTRY_NOT_READY = "Waiting for git-registry relation data"
 MSG_INGRESS_NOT_READY = "Waiting for ingress URL"
 MSG_GIT_REGISTRY_API_ERROR = "Failed to configure NiFi flow registry client"
@@ -57,6 +78,7 @@ MSG_GIT_REGISTRY_SSH_UNSUPPORTED = (
 )
 
 # Relation names
+CERTIFICATES_RELATION = "certificates"
 GIT_REGISTRY_RELATION = "git-registry"
 INGRESS_RELATION = "ingress"
 

@@ -5,11 +5,22 @@
 """Charm the Apache NiFi service."""
 
 import hashlib
+import ipaddress
 import logging
+import os
+import socket
+from pathlib import Path
 from urllib.parse import urlparse
 
 import charms.git_integrator.v0.git as git
 import ops
+from charmlibs.interfaces.tls_certificates import (
+    CertificateRequestAttributes,
+    Mode,
+    PrivateKey,
+    ProviderCertificate,
+    TLSCertificatesRequiresV4,
+)
 from charms.traefik_k8s.v2.ingress import IngressPerAppRequirer
 
 import constants
@@ -56,6 +67,16 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             strip_prefix=True,
         )
 
+        # Setup after the ingress requirer: the server certificate includes the
+        # ingress host, so ingress changes must refresh the requests.
+        self.certificates = TLSCertificatesRequiresV4(
+            self,
+            constants.CERTIFICATES_RELATION,
+            certificate_requests=lambda _capabilities=None: self._certificate_requests(),
+            mode=Mode.UNIT,
+            refresh_events=[self.on.upgrade_charm, self.ingress.on.ready, self.ingress.on.revoked],
+        )
+
         for event in [
             self.on[constants.CONTAINER_NAME].pebble_ready,
             self.on.start,
@@ -65,6 +86,9 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             self.on[constants.GIT_REGISTRY_RELATION].relation_broken,
             self.ingress.on.ready,
             self.ingress.on.revoked,
+            self.certificates.on.certificate_available,
+            self.certificates.on.certificate_denied,
+            self.on[constants.CERTIFICATES_RELATION].relation_broken,
         ]:
             self.framework.observe(event, self._reconcile)
 
@@ -155,6 +179,202 @@ class NifiK8SOperatorCharm(ops.CharmBase):
 
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         return f"{parsed.hostname}:{port}", parsed.path.rstrip("/")
+
+    @staticmethod
+    def _fit_common_name(full: str, short: str) -> str | None:
+        """Return the first name that fits a certificate's common name, or None.
+
+        X.509 limits the common name to 64 characters. The short form swaps the
+        model name for the start of the model UUID, so it stays unique, stays
+        under svc.cluster.local (which Vault allows), and never changes.
+
+        Limitations:
+        - The short form isn't a DNS name. That's fine for TLS, since clients
+          check the SANs, which always hold the full names.
+        - Don't change this rule once released: the charm's identity is seeded
+          in NiFi as its first admin, and a different name would lock the charm out.
+        - None means even the short form is too long (an app name over about
+          31 characters). Juju can't rename an application, so the only fix is
+          redeploying with a shorter name.
+        """
+        for name in (full, short):
+            if len(name) <= constants.TLS_COMMON_NAME_MAX_LENGTH:
+                return name
+        return None
+
+    def _server_certificate_request(self) -> CertificateRequestAttributes | None:
+        """NiFi's server certificate: the pod FQDN as common name, plus its other names.
+
+        All names stay in the SANs, whatever the common name. The library's random
+        ID stays in the subject (the default): without it a renewal sends the same
+        request again and the provider never re-issues. None if no name fits.
+
+        Limitation: the ingress host is a SAN, so the provider must allow it too.
+        A Vault role needs the public parent domain (and pki_allow_ip_sans for an
+        IP host); otherwise it denies the request and the unit goes Blocked.
+        """
+        pod_fqdn = socket.getfqdn()
+        unit_host = self.unit.name.replace("/", "-")
+        common_name = self._fit_common_name(
+            pod_fqdn, f"{unit_host}.{self.model.uuid[:8]}.svc.cluster.local"
+        )
+        if not common_name:
+            return None
+        sans_dns = {pod_fqdn, f"{self.app.name}.{self.model.name}.svc.cluster.local"}
+        sans_ip: set[str] = set()
+
+        ingress_host = urlparse(self.ingress.url).hostname if self.ingress.url else None
+        if ingress_host:
+            try:
+                ipaddress.ip_address(ingress_host)
+                sans_ip.add(ingress_host)
+            except ValueError:
+                sans_dns.add(ingress_host)
+
+        return CertificateRequestAttributes(
+            common_name=common_name,
+            sans_dns=sans_dns,
+            sans_ip=sans_ip or None,
+        )
+
+    def _charm_identity_request(self) -> CertificateRequestAttributes | None:
+        """The charm's client certificate, used later to call NiFi's API over HTTPS.
+
+        The name is under svc.cluster.local. Every unit requests the same name.
+        It is seeded as NiFi's first admin, so it depends only on the app and
+        model, which never change. None if no name fits.
+        """
+        common_name = self._fit_common_name(
+            f"charm.{self.app.name}.{self.model.name}.svc.cluster.local",
+            f"charm.{self.app.name}.{self.model.uuid[:8]}.svc.cluster.local",
+        )
+        return CertificateRequestAttributes(common_name=common_name) if common_name else None
+
+    def _certificate_requests(self) -> list[CertificateRequestAttributes]:
+        requests = (self._server_certificate_request(), self._charm_identity_request())
+        return [r for r in requests if r is not None]
+
+    def _certificate_request_error(self, request: CertificateRequestAttributes) -> str | None:
+        """Return the provider's error for one of this unit's requests, if it was denied.
+
+        The library never re-sends a denied request with the same names. Recovery
+        relies on the provider retrying it. A provider that doesn't retry
+        needs the relation removed and added again.
+        """
+        for requirer_csr in self.certificates.get_csrs_from_requirer_relation_data():
+            csr = requirer_csr.certificate_signing_request
+            if CertificateRequestAttributes.from_csr(csr, requirer_csr.is_ca) != request:
+                continue
+            error = self.certificates.get_request_error(csr)
+            if error:
+                return error.error.message
+        return None
+
+    def _client_tls_dir(self) -> Path:
+        # In the charm container, under the unit's agent directory. It isn't on a
+        # volume, so a new pod starts without it; reconcile writes it again from
+        # the library's secrets.
+        return Path(self.charm_dir).parent / constants.CLIENT_TLS_DIR_NAME
+
+    def _push_if_changed(self, path: str, content: str, permissions: int) -> None:
+        """Push a file to the workload only when its content differs."""
+        if self._container.exists(path) and self._container.pull(path).read() == content:
+            return
+        self._container.push(
+            path,
+            content,
+            user=constants.WORKLOAD_USER,
+            group=constants.WORKLOAD_GROUP,
+            permissions=permissions,
+            make_dirs=True,
+        )
+
+    def _write_server_tls_files(self, cert: ProviderCertificate, key: PrivateKey) -> None:
+        """Write NiFi's certificate (with intermediates), key and CA to the workload.
+
+        Renewals keep the same file names, so NiFi can reload them in place.
+        """
+        # TODO: the three files are pushed one by one, so a new key can
+        # briefly sit next to the old certificate. Harmless while NiFi serves HTTP;
+        # once NiFi reloads these files, write the certificate and key so it never
+        # reads a mismatched pair.
+        leaf, ca = str(cert.certificate), str(cert.ca)
+        intermediates = [str(c) for c in cert.chain if str(c) not in (leaf, ca)]
+        try:
+            self._push_if_changed(constants.TLS_KEY_PATH, f"{key}\n", 0o600)
+            self._push_if_changed(
+                constants.TLS_CERT_PATH, "\n".join([leaf, *intermediates]) + "\n", 0o644
+            )
+            self._push_if_changed(constants.TLS_CA_PATH, f"{ca}\n", 0o644)
+        except ops.pebble.Error as e:
+            logger.exception("Failed to write TLS files: %s", e)
+            raise ExitWithStatusError(constants.MSG_TLS_WRITE_FAILED, ops.BlockedStatus)
+
+    def _write_client_tls_files(self, cert: ProviderCertificate, key: PrivateKey) -> None:
+        """Write the charm's client certificate, key and CA in the charm container only."""
+        directory = self._client_tls_dir()
+        try:
+            directory.mkdir(mode=0o700, exist_ok=True)
+            for name, content, mode in (
+                ("cert.pem", f"{cert.certificate}\n", 0o644),
+                ("key.pem", f"{key}\n", 0o600),
+                ("ca.pem", f"{cert.ca}\n", 0o644),
+            ):
+                path = directory / name
+                if path.exists() and path.read_text() == content:
+                    continue
+                # Create the file with its final mode, so the key is never readable by others.
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+                with os.fdopen(fd, "w") as f:
+                    f.write(content)
+                path.chmod(mode)
+        except OSError as e:
+            logger.exception("Failed to write the charm's client TLS files: %s", e)
+            raise ExitWithStatusError(constants.MSG_TLS_WRITE_FAILED, ops.BlockedStatus)
+
+    def _tls_files_written(self) -> bool:
+        return (
+            self._container.exists(constants.TLS_CERT_PATH)
+            and (self._client_tls_dir() / "cert.pem").exists()
+        )
+
+    def _reconcile_tls(self) -> None:
+        """Write the certificates from the `certificates` relation, once issued.
+
+        NiFi doesn't use these files yet; it still serves HTTP. Without the
+        relation, any existing files are kept, so a later switch to HTTPS never
+        falls back.
+
+        Raises:
+            ExitWithStatusError(BlockedStatus): If the names can't fit a certificate,
+                or the provider denied a request.
+            ExitWithStatusError(WaitingStatus): Until both certificates are first issued.
+        """
+        if not self.model.get_relation(constants.CERTIFICATES_RELATION):
+            return
+
+        server_request = self._server_certificate_request()
+        identity_request = self._charm_identity_request()
+        if server_request is None or identity_request is None:
+            raise ExitWithStatusError(constants.MSG_TLS_NAME_TOO_LONG, ops.BlockedStatus)
+        for request in (server_request, identity_request):
+            reason = self._certificate_request_error(request)
+            if reason:
+                raise ExitWithStatusError(
+                    constants.MSG_TLS_DENIED.format(reason=reason), ops.BlockedStatus
+                )
+
+        cert, key = self.certificates.get_assigned_certificate(server_request)
+        if cert and key:
+            self._write_server_tls_files(cert, key)
+        cert, key = self.certificates.get_assigned_certificate(identity_request)
+        if cert and key:
+            self._write_client_tls_files(cert, key)
+
+        # A renewal also leaves a request pending for a while; the current files
+        # stay valid then, so only wait until the first certificates are written.
+        if not self._tls_files_written():
+            raise ExitWithStatusError(constants.MSG_TLS_WAITING, ops.WaitingStatus)
 
     def _rotate_sensitive_key(self, event) -> str | None:
         """Run nifi.sh key rotation if *event* is a secret-changed for our key.
@@ -453,6 +673,10 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         6. Apply pebble layer and (re)start the service as needed.
         7. Wait for NiFi to become ready.
         8. Configure or clean up the flow registry client via REST API.
+        9. Write TLS certificates, once issued. This runs last because NiFi
+           doesn't use them yet, so a pending certificate must not hold back
+           the HTTP setup above. As a result, the files are written only once
+           NiFi is ready.
         """
         try:
             self._check_pebble_connection()
@@ -471,6 +695,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             )
             self._check_nifi_ready()
             self._reconcile_git_registry()
+            self._reconcile_tls()
         except ExitWithStatusError as e:
             self.unit.status = e.status
             return

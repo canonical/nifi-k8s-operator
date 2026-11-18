@@ -1,7 +1,7 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""Unit tests for NifiRestClient, against a small fake of NiFi's registry-client API.
+"""Unit tests for NifiRestClient, against a local server that mimics NiFi's registry-client API.
 
 These tests deliberately use a loopback HTTP server instead of mocks: the client's
 job is the HTTP and JSON handling, so mocking urllib would test nothing real. The
@@ -22,7 +22,7 @@ from nifi_rest_client import NifiClientError, NifiConnectionError, NifiRestClien
 API = "/nifi-api/controller/registry-clients"
 
 
-class FakeNifi:
+class NifiTestServer:
     """In-memory registry clients, plus switches to make the next calls fail."""
 
     def __init__(self):
@@ -83,22 +83,22 @@ class FakeNifi:
 
 @pytest.fixture(autouse=True)
 def _block_http():
-    """Override conftest's guard: these tests call a local fake NiFi on purpose."""
+    """Override conftest's guard: these tests call a local test server on purpose."""
     yield
 
 
 @pytest.fixture()
 def nifi():
-    fake = FakeNifi()
+    api = NifiTestServer()
 
     class Handler(BaseHTTPRequestHandler):
         def _serve(self):
             length = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(length)) if length else None
-            status, payload = fake.handle(self.command, self.path, body)
+            status, payload = api.handle(self.command, self.path, body)
             encoded = payload.encode()
             self.send_response(status)
-            extra = 50 if fake.truncate else 0
+            extra = 50 if api.truncate else 0
             self.send_header("Content-Length", str(len(encoded) + extra))
             self.end_headers()
             self.wfile.write(encoded)
@@ -111,8 +111,8 @@ def nifi():
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, args=(0.01,), daemon=True)
     thread.start()
-    fake.url = f"http://127.0.0.1:{server.server_address[1]}"
-    yield fake
+    api.url = f"http://127.0.0.1:{server.server_address[1]}"
+    yield api
     server.shutdown()
     server.server_close()
 

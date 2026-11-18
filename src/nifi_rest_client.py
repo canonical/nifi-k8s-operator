@@ -3,8 +3,7 @@
 
 """NiFi REST API client for managing flow registry clients.
 
-Built on the standard library (urllib.request and json) rather than an
-external client: the charm only needs four calls on one resource.
+Built on the standard library (urllib.request and json)
 """
 
 import http.client

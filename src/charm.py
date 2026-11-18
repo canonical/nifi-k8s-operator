@@ -193,9 +193,13 @@ class NifiK8SOperatorCharm(ops.CharmBase):
           check the SANs, which always hold the full names.
         - Don't change this rule once released: the charm's identity is seeded
           in NiFi as its first admin, and a different name would lock the charm out.
-        - None means even the short form is too long (an app name over about
-          31 characters). Juju can't rename an application, so the only fix is
-          redeploying with a shorter name.
+        - None means even the short form is too long. The charm's identity is
+          len(app) + len(model) + 25 characters in full and len(app) + 33 short,
+          so it fails only when the app name is over 31 characters and app plus
+          model is over 39. The server name (pod FQDN) is 2 * len(app) + len(model)
+          + 32 in full and len(app) + 29 short, so it fails only for app names over
+          35. Juju can't rename an application, so the only fix is redeploying with
+          a shorter name.
         """
         for name in (full, short):
             if len(name) <= constants.TLS_COMMON_NAME_MAX_LENGTH:
@@ -251,8 +255,16 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         return CertificateRequestAttributes(common_name=common_name) if common_name else None
 
     def _certificate_requests(self) -> list[CertificateRequestAttributes]:
-        requests = (self._server_certificate_request(), self._charm_identity_request())
-        return [r for r in requests if r is not None]
+        """Both requests, or none if either name doesn't fit.
+
+        The unit goes Blocked when one doesn't fit, so sending the other would
+        only get a certificate issued for a unit that can't use it.
+        """
+        server = self._server_certificate_request()
+        identity = self._charm_identity_request()
+        if server is None or identity is None:
+            return []
+        return [server, identity]
 
     def _certificate_request_error(self, request: CertificateRequestAttributes) -> str | None:
         """Return the provider's error for one of this unit's requests, if it was denied.
@@ -289,6 +301,17 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             make_dirs=True,
         )
 
+    @staticmethod
+    def _cert_with_intermediates(cert: ProviderCertificate) -> str:
+        """The leaf followed by any intermediates, without the CA.
+
+        ca.pem may hold only the root, so a peer can only build the chain
+        if the intermediates are sent with the leaf.
+        """
+        leaf, ca = str(cert.certificate), str(cert.ca)
+        intermediates = [str(c) for c in cert.chain if str(c) not in (leaf, ca)]
+        return "\n".join([leaf, *intermediates]) + "\n"
+
     def _write_server_tls_files(self, cert: ProviderCertificate, key: PrivateKey) -> None:
         """Write NiFi's certificate (with intermediates), key and CA to the workload.
 
@@ -298,28 +321,22 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         # briefly sit next to the old certificate. Harmless while NiFi serves HTTP;
         # once NiFi reloads these files, write the certificate and key so it never
         # reads a mismatched pair.
-        leaf, ca = str(cert.certificate), str(cert.ca)
-        intermediates = [str(c) for c in cert.chain if str(c) not in (leaf, ca)]
         try:
             self._push_if_changed(constants.TLS_KEY_PATH, f"{key}\n", 0o600)
             self._push_if_changed(
-                constants.TLS_CERT_PATH, "\n".join([leaf, *intermediates]) + "\n", 0o644
+                constants.TLS_CERT_PATH, self._cert_with_intermediates(cert), 0o644
             )
-            self._push_if_changed(constants.TLS_CA_PATH, f"{ca}\n", 0o644)
+            self._push_if_changed(constants.TLS_CA_PATH, f"{cert.ca}\n", 0o644)
         except ops.pebble.Error as e:
             logger.exception("Failed to write TLS files: %s", e)
             raise ExitWithStatusError(constants.MSG_TLS_WRITE_FAILED, ops.BlockedStatus)
 
-    def _write_client_tls_files(self, cert: ProviderCertificate, key: PrivateKey) -> None:
-        """Write the charm's client certificate, key and CA in the charm container only."""
+    def _write_client_files(self, files: list[tuple[str, str, int]]) -> None:
+        """Write (name, content, mode) files to the client TLS dir in the charm container."""
         directory = self._client_tls_dir()
         try:
             directory.mkdir(mode=0o700, exist_ok=True)
-            for name, content, mode in (
-                ("cert.pem", f"{cert.certificate}\n", 0o644),
-                ("key.pem", f"{key}\n", 0o600),
-                ("ca.pem", f"{cert.ca}\n", 0o644),
-            ):
+            for name, content, mode in files:
                 path = directory / name
                 if path.exists() and path.read_text() == content:
                     continue
@@ -332,10 +349,31 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             logger.exception("Failed to write the charm's client TLS files: %s", e)
             raise ExitWithStatusError(constants.MSG_TLS_WRITE_FAILED, ops.BlockedStatus)
 
-    def _tls_files_written(self) -> bool:
+    def _write_client_tls_files(self, cert: ProviderCertificate, key: PrivateKey) -> None:
+        """Write the charm's client certificate (with intermediates), key and CA.
+
+        They stay in the charm container only.
+        """
+        self._write_client_files(
+            [
+                ("cert.pem", self._cert_with_intermediates(cert), 0o644),
+                ("key.pem", f"{key}\n", 0o600),
+                ("ca.pem", f"{cert.ca}\n", 0o644),
+            ]
+        )
+
+    def _tls_files_written(self, relation: ops.Relation) -> bool:
+        """Whether both sets of files were written from this relation's certificates.
+
+        Files from an earlier relation are kept (so HTTPS never drops), but they
+        don't count: after the relation is added again, possibly with another
+        provider, the unit waits until the new certificates are written.
+        """
+        marker = self._client_tls_dir() / constants.TLS_RELATION_ID_FILE
         return (
             self._container.exists(constants.TLS_CERT_PATH)
-            and (self._client_tls_dir() / "cert.pem").exists()
+            and marker.exists()
+            and marker.read_text() == str(relation.id)
         )
 
     def _reconcile_tls(self) -> None:
@@ -348,9 +386,11 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         Raises:
             ExitWithStatusError(BlockedStatus): If the names can't fit a certificate,
                 or the provider denied a request.
-            ExitWithStatusError(WaitingStatus): Until both certificates are first issued.
+            ExitWithStatusError(WaitingStatus): Until this relation's certificates are
+                first written.
         """
-        if not self.model.get_relation(constants.CERTIFICATES_RELATION):
+        relation = self.model.get_relation(constants.CERTIFICATES_RELATION)
+        if not relation:
             return
 
         server_request = self._server_certificate_request()
@@ -364,16 +404,19 @@ class NifiK8SOperatorCharm(ops.CharmBase):
                     constants.MSG_TLS_DENIED.format(reason=reason), ops.BlockedStatus
                 )
 
-        cert, key = self.certificates.get_assigned_certificate(server_request)
-        if cert and key:
-            self._write_server_tls_files(cert, key)
-        cert, key = self.certificates.get_assigned_certificate(identity_request)
-        if cert and key:
-            self._write_client_tls_files(cert, key)
+        server_cert, server_key = self.certificates.get_assigned_certificate(server_request)
+        if server_cert and server_key:
+            self._write_server_tls_files(server_cert, server_key)
+        identity_cert, identity_key = self.certificates.get_assigned_certificate(identity_request)
+        if identity_cert and identity_key:
+            self._write_client_tls_files(identity_cert, identity_key)
+        if server_cert and identity_cert:
+            self._write_client_files([(constants.TLS_RELATION_ID_FILE, str(relation.id), 0o644)])
 
         # A renewal also leaves a request pending for a while; the current files
-        # stay valid then, so only wait until the first certificates are written.
-        if not self._tls_files_written():
+        # stay valid then, so only wait until this relation's first certificates
+        # are written.
+        if not self._tls_files_written(relation):
             raise ExitWithStatusError(constants.MSG_TLS_WAITING, ops.WaitingStatus)
 
     def _rotate_sensitive_key(self, event) -> str | None:

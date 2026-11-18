@@ -77,8 +77,11 @@ def _assigned(issued: set[str]):
 
 
 def _state(container, *, tls_relation=True, relations=(), model=None):
+    """State with a certificates relation; pass a Relation to reuse it across runs."""
     rels = set(relations)
-    if tls_relation:
+    if isinstance(tls_relation, ops.testing.Relation):
+        rels.add(tls_relation)
+    elif tls_relation:
         rels.add(ops.testing.Relation(constants.CERTIFICATES_RELATION))
     return ops.testing.State(
         containers=[container],
@@ -182,6 +185,20 @@ class TestLongNames:
         long_pod_fqdn = f"{app}-0.{app}-endpoints.{MODEL}.svc.cluster.local"
         with patch("charm.socket.getfqdn", return_value=long_pod_fqdn):
             with context(context.on.update_status(), _state(container)) as mgr:
+                assert mgr.charm._certificate_requests() == []
+                out = mgr.run()
+        assert out.unit_status == ops.BlockedStatus(constants.MSG_TLS_NAME_TOO_LONG)
+
+    def test_only_identity_too_long_sends_no_requests(self, container, client_dir):
+        # A 32-character app: the server's short name fits (61 characters), but the
+        # identity doesn't (67 full, 65 short), so neither request is sent.
+        app = "nifi-" + "x" * 27
+        context = ops.testing.Context(NifiK8SOperatorCharm, app_name=app)
+        long_pod_fqdn = f"{app}-0.{app}-endpoints.{MODEL}.svc.cluster.local"
+        with patch("charm.socket.getfqdn", return_value=long_pod_fqdn):
+            with context(context.on.update_status(), _state(container)) as mgr:
+                assert mgr.charm._server_certificate_request() is not None
+                assert mgr.charm._charm_identity_request() is None
                 assert mgr.charm._certificate_requests() == []
                 out = mgr.run()
         assert out.unit_status == ops.BlockedStatus(constants.MSG_TLS_NAME_TOO_LONG)
@@ -303,22 +320,25 @@ class TestFiles:
         assert CHARM_IDENTITY_CN in _issue_subject(cert)
 
     def test_unchanged_files_not_pushed_again(self, context, container, client_dir, tmp_path):
-        mounted = _container_with_written_tls(context, container, tmp_path)
+        relation = ops.testing.Relation(constants.CERTIFICATES_RELATION)
+        mounted = _container_with_written_tls(context, container, tmp_path, relation)
         with patch.object(ops.Container, "push", autospec=True) as push:
-            out = context.run(context.on.update_status(), _state(mounted))
+            out = context.run(context.on.update_status(), _state(mounted, tls_relation=relation))
         tls_pushes = [c for c in push.call_args_list if c.args[1].startswith(constants.TLS_DIR)]
         assert tls_pushes == []
         assert out.unit_status == ops.ActiveStatus()
 
 
-def _container_with_written_tls(context, container, tmp_path) -> ops.testing.Container:
+def _container_with_written_tls(
+    context, container, tmp_path, relation: ops.testing.Relation
+) -> ops.testing.Container:
     """Issue both certificates once, then return a container with those files mounted."""
     with patch.object(
         TLSCertificatesRequiresV4,
         "get_assigned_certificate",
         _assigned({POD_FQDN, CHARM_IDENTITY_CN}),
     ):
-        out = context.run(context.on.update_status(), _state(container))
+        out = context.run(context.on.update_status(), _state(container, tls_relation=relation))
     # The run's filesystem is temporary, so copy the files out of it.
     tls_dir = tmp_path / "tls"
     shutil.copytree(_workload_file(out, context, constants.TLS_DIR), tls_dir)
@@ -339,16 +359,83 @@ class TestKeepFiles:
     def test_renewal_pending_keeps_files_and_stays_active(
         self, context, container, client_dir, tmp_path
     ):
-        mounted = _container_with_written_tls(context, container, tmp_path)
+        relation = ops.testing.Relation(constants.CERTIFICATES_RELATION)
+        mounted = _container_with_written_tls(context, container, tmp_path, relation)
         before = (tmp_path / "tls" / "cert.pem").read_text()
         with patch.object(TLSCertificatesRequiresV4, "get_assigned_certificate", _assigned(set())):
-            out = context.run(context.on.update_status(), _state(mounted))
+            out = context.run(context.on.update_status(), _state(mounted, tls_relation=relation))
         assert out.unit_status == ops.ActiveStatus()
         assert (tmp_path / "tls" / "cert.pem").read_text() == before
 
+    def test_relation_added_again_waits_for_new_certificates(
+        self, context, container, client_dir, tmp_path
+    ):
+        old = ops.testing.Relation(constants.CERTIFICATES_RELATION)
+        mounted = _container_with_written_tls(context, container, tmp_path, old)
+        new = ops.testing.Relation(constants.CERTIFICATES_RELATION)
+        assert new.id != old.id
+        # The new relation's provider hasn't issued yet: old files kept, unit waits.
+        with patch.object(TLSCertificatesRequiresV4, "get_assigned_certificate", _assigned(set())):
+            out = context.run(context.on.update_status(), _state(mounted, tls_relation=new))
+        assert out.unit_status == ops.WaitingStatus(constants.MSG_TLS_WAITING)
+        assert (tmp_path / "tls" / "cert.pem").exists()
+        # Once both are issued on the new relation, the unit is active again.
+        with patch.object(
+            TLSCertificatesRequiresV4,
+            "get_assigned_certificate",
+            _assigned({POD_FQDN, CHARM_IDENTITY_CN}),
+        ):
+            out = context.run(context.on.update_status(), _state(mounted, tls_relation=new))
+        assert out.unit_status == ops.ActiveStatus()
+
     def test_relation_removed_keeps_files(self, context, container, client_dir, tmp_path):
-        mounted = _container_with_written_tls(context, container, tmp_path)
+        relation = ops.testing.Relation(constants.CERTIFICATES_RELATION)
+        mounted = _container_with_written_tls(context, container, tmp_path, relation)
         out = context.run(context.on.update_status(), _state(mounted, tls_relation=False))
         assert out.unit_status == ops.ActiveStatus()
         assert (tmp_path / "tls" / "cert.pem").exists()
         assert (client_dir / "cert.pem").exists()
+
+
+_INTERMEDIATE_KEY = generate_private_key()
+_INTERMEDIATE = generate_certificate(
+    CertificateRequestAttributes(common_name="test-intermediate").generate_csr(_INTERMEDIATE_KEY),
+    _CA,
+    _CA_KEY,
+    datetime.timedelta(days=30),
+    is_ca=True,
+)
+
+
+def _assigned_via_intermediate(_self, request):
+    """Fake get_assigned_certificate: sign through root -> intermediate -> leaf."""
+    csr = request.generate_csr(_UNIT_KEY)
+    cert = generate_certificate(csr, _INTERMEDIATE, _INTERMEDIATE_KEY, datetime.timedelta(days=1))
+    issued = ProviderCertificate(
+        relation_id=1,
+        certificate=cert,
+        certificate_signing_request=csr,
+        ca=_CA,
+        chain=[cert, _INTERMEDIATE, _CA],
+    )
+    return issued, _UNIT_KEY
+
+
+@patch.object(TLSCertificatesRequiresV4, "get_assigned_certificate", _assigned_via_intermediate)
+class TestIntermediateChain:
+    """ca.pem holds only the root, so both cert.pem files must carry the intermediate."""
+
+    def test_server_cert_includes_intermediate(self, context, container, client_dir):
+        out = context.run(context.on.update_status(), _state(container))
+        cert = _workload_file(out, context, constants.TLS_CERT_PATH).read_text()
+        assert cert.count("BEGIN CERTIFICATE") == 2
+        assert cert.rstrip("\n").endswith(str(_INTERMEDIATE))
+        assert str(_CA) not in cert
+
+    def test_client_cert_includes_intermediate(self, context, container, client_dir):
+        context.run(context.on.update_status(), _state(container))
+        cert = (client_dir / "cert.pem").read_text()
+        assert cert.count("BEGIN CERTIFICATE") == 2
+        assert cert.rstrip("\n").endswith(str(_INTERMEDIATE))
+        assert str(_CA) not in cert
+        assert CHARM_IDENTITY_CN in _issue_subject(cert)

@@ -28,6 +28,8 @@ TLS_CA_PATH = f"{TLS_DIR}/ca.pem"
 # The charm's own client certificate stays in the charm container, never in
 # the workload. The directory is next to the charm code, under the unit's agent dir.
 CLIENT_TLS_DIR_NAME = "nifi-client-tls"
+# Records which certificates relation the TLS files were written from.
+TLS_RELATION_ID_FILE = "relation-id"
 
 # X.509 limit on a certificate's common name (RFC 5280, ub-common-name).
 TLS_COMMON_NAME_MAX_LENGTH = 64

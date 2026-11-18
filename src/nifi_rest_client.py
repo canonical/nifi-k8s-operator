@@ -1,18 +1,25 @@
 # Copyright 2026 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-"""NiFi REST API client for managing flow registry clients."""
+"""NiFi REST API client for managing flow registry clients.
 
+Built on the standard library (urllib.request and json) rather than an
+external client: the charm only needs four calls on one resource.
+"""
+
+import http.client
+import json
 import logging
-from urllib.parse import urlsplit
-
-import nipyapi
-import urllib3.exceptions
-from nipyapi.nifi.apis import ControllerApi
-from nipyapi.nifi.models import FlowRegistryClientDTO, FlowRegistryClientEntity, RevisionDTO
-from nipyapi.nifi.rest import ApiException
+import urllib.error
+import urllib.request
+from typing import Any
+from urllib.parse import urlencode, urlsplit
 
 logger = logging.getLogger(__name__)
+
+REGISTRY_CLIENTS_PATH = "/controller/registry-clients"
+# HTTP statuses that mean NiFi is still starting or briefly unavailable.
+RETRYABLE_STATUSES = frozenset({503})
 
 
 class NifiClientError(Exception):
@@ -26,10 +33,9 @@ class NifiConnectionError(NifiClientError):
 class NifiRestClient:
     """Thin client for NiFi's /nifi-api/controller/registry-clients endpoints."""
 
-    def __init__(self, base_url: str, timeout: int = 30):
-        nipyapi.config.nifi_config.host = f"{base_url.rstrip('/')}/nifi-api"
-        nipyapi.config.nifi_config.connection_timeout = timeout
-        self._controller = ControllerApi()
+    def __init__(self, base_url: str, timeout: float = 30):
+        self._api_url = f"{base_url.rstrip('/')}/nifi-api"
+        self._timeout = timeout
 
     def create_or_update_registry_client(
         self,
@@ -98,66 +104,122 @@ class NifiRestClient:
             else:
                 properties["Authentication Type"] = "NONE"
 
-        try:
-            existing = self._find_by_name(name)
-            component = FlowRegistryClientDTO(
-                name=name, type=component_type, properties=properties
+        existing = self._find_by_name(name)
+        component: dict[str, Any] = {
+            "name": name,
+            "type": component_type,
+            "properties": properties,
+        }
+        error = "Registry client operation failed"
+        if existing:
+            client_id = existing["id"]
+            component["id"] = client_id
+            logger.info("Updating registry client %s (id=%s)", name, client_id)
+            return self._request(
+                "PUT",
+                f"{REGISTRY_CLIENTS_PATH}/{client_id}",
+                error=error,
+                body={"revision": existing["revision"], "component": component},
             )
-            if existing:
-                component.id = existing.id
-                logger.info("Updating registry client %s (id=%s)", name, existing.id)
-                result = self._controller.update_flow_registry_client(
-                    body=FlowRegistryClientEntity(revision=existing.revision, component=component),
-                    id=existing.id,
-                )
-            else:
-                logger.info("Creating registry client %s", name)
-                result = self._controller.create_flow_registry_client(
-                    body=FlowRegistryClientEntity(
-                        revision=RevisionDTO(version=0), component=component
-                    ),
-                )
-            return result.to_dict()
-        except ApiException as e:
-            if e.status in (0, 503):
-                raise NifiConnectionError(f"NiFi API not reachable: {e}") from e
-            raise NifiClientError(f"Registry client operation failed: {e}") from e
+        logger.info("Creating registry client %s", name)
+        # NiFi rejects a create unless the revision is 0 and no ID is set.
+        return self._request(
+            "POST",
+            REGISTRY_CLIENTS_PATH,
+            error=error,
+            body={"revision": {"version": 0}, "component": component},
+        )
 
     def delete_registry_client(self, name: str) -> bool:
         """Delete a flow registry client by name. Returns True if deleted."""
-        try:
-            existing = self._find_by_name(name)
-            if not existing:
-                return False
+        existing = self._find_by_name(name)
+        if not existing:
+            return False
 
-            logger.info("Deleting registry client %s (id=%s)", name, existing.id)
-            self._controller.delete_flow_registry_client(
-                id=existing.id,
-                version=existing.revision.version if existing.revision else 0,
-            )
-            return True
-        except ApiException as e:
-            if e.status in (0, 503):
-                raise NifiConnectionError(f"NiFi API not reachable: {e}") from e
-            raise NifiClientError(f"Registry client delete failed: {e}") from e
+        client_id = existing["id"]
+        logger.info("Deleting registry client %s (id=%s)", name, client_id)
+        self._request(
+            "DELETE",
+            f"{REGISTRY_CLIENTS_PATH}/{client_id}",
+            error="Registry client delete failed",
+            query={"version": existing["revision"]["version"]},
+        )
+        return True
 
-    def _find_by_name(self, name: str):
-        """Find a flow registry client by name.
+    def _find_by_name(self, name: str) -> dict | None:
+        """Find a flow registry client entity by name.
 
         Raises:
-            NifiConnectionError: If the NiFi API is not reachable (status 0 or 503).
+            NifiConnectionError: If the NiFi API is not reachable.
             NifiClientError: If the API call fails with other HTTP errors.
         """
+        result = self._request(
+            "GET", REGISTRY_CLIENTS_PATH, error="Failed to list registry clients"
+        )
+        return next(
+            (
+                c
+                for c in result.get("registries") or []
+                if (c.get("component") or {}).get("name") == name
+            ),
+            None,
+        )
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        error: str,
+        body: dict | None = None,
+        query: dict | None = None,
+    ) -> dict:
+        """Call the NiFi API and return the decoded JSON response ({} if empty).
+
+        Args:
+            method: HTTP method.
+            path: Path under /nifi-api.
+            error: Message prefix for a failed call.
+            body: JSON request body.
+            query: Query parameters.
+
+        Raises:
+            NifiConnectionError: If NiFi can't be reached, times out, answers 503,
+                or drops the connection mid-reply.
+            NifiClientError: If NiFi answers with any other error, or invalid JSON.
+        """
+        url = f"{self._api_url}{path}"
+        if query:
+            url = f"{url}?{urlencode(query)}"
+        data = json.dumps(body).encode() if body is not None else None
+        request = urllib.request.Request(url, data=data, method=method)
+        request.add_header("Accept", "application/json")
+        if data is not None:
+            request.add_header("Content-Type", "application/json")
+
         try:
-            result = self._controller.get_flow_registry_clients()
-            registries = (result.registries or []) if result else []
-            return next(
-                (c for c in registries if c.component and c.component.name == name),
-                None,
-            )
-        except (urllib3.exceptions.MaxRetryError, urllib3.exceptions.NewConnectionError) as e:
-            raise NifiConnectionError(f"NiFi API not reachable: {e}") from e
-        except ApiException as e:
-            if e.status in (0, 503):
-                raise NifiConnectionError(f"NiFi API not reachable: {e}") from e
-            raise NifiClientError(f"Failed to list registry clients: {e}") from e
+            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+                payload = response.read()
+        except urllib.error.HTTPError as e:
+            # NiFi explains most errors in a plain-text body.
+            detail = e.read().decode(errors="replace").strip()[:500]
+            message = f"HTTP {e.code} from {method} {path}: {detail}"
+            if e.code in RETRYABLE_STATUSES:
+                raise NifiConnectionError(f"NiFi API not reachable: {message}") from e
+            raise NifiClientError(f"{error}: {message}") from e
+        # HTTPException covers a reply cut off mid-body, e.g. NiFi restarting.
+        except (
+            urllib.error.URLError,
+            http.client.HTTPException,
+            TimeoutError,
+            ConnectionError,
+        ) as e:
+            reason = getattr(e, "reason", e)
+            raise NifiConnectionError(f"NiFi API not reachable: {reason}") from e
+
+        if not payload:
+            return {}
+        try:
+            return json.loads(payload)
+        except json.JSONDecodeError as e:
+            raise NifiClientError(f"{error}: invalid JSON from {method} {path}") from e

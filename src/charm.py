@@ -88,6 +88,10 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             self.ingress.on.revoked,
             self.certificates.on.certificate_available,
             self.certificates.on.certificate_denied,
+            # Registered after the library's own handlers, so the requests are
+            # already sent; reconciling here shows Waiting straight away.
+            self.on[constants.CERTIFICATES_RELATION].relation_created,
+            self.on[constants.CERTIFICATES_RELATION].relation_changed,
             self.on[constants.CERTIFICATES_RELATION].relation_broken,
         ]:
             self.framework.observe(event, self._reconcile)
@@ -365,9 +369,9 @@ class NifiK8SOperatorCharm(ops.CharmBase):
     def _tls_files_written(self, relation: ops.Relation) -> bool:
         """Whether both sets of files were written from this relation's certificates.
 
-        Files from an earlier relation are kept (so HTTPS never drops), but they
-        don't count: after the relation is added again, possibly with another
-        provider, the unit waits until the new certificates are written.
+        Files from an earlier relation may still be on disk, but they don't count:
+        after the relation is added again, possibly with another provider, the
+        unit waits until the new certificates are written.
         """
         marker = self._client_tls_dir() / constants.TLS_RELATION_ID_FILE
         return (
@@ -380,8 +384,9 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         """Write the certificates from the `certificates` relation, once issued.
 
         NiFi doesn't use these files yet; it still serves HTTP. Without the
-        relation, any existing files are kept, so a later switch to HTTPS never
-        falls back.
+        relation, existing files are left in place, but they don't outlive the
+        pod: the library deletes its secrets when the relation is removed, so
+        nothing can write them again after a restart.
 
         Raises:
             ExitWithStatusError(BlockedStatus): If the names can't fit a certificate,

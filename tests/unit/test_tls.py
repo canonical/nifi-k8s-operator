@@ -219,6 +219,14 @@ class TestStatuses:
         assert _workload_file(out, context, constants.NIFI_PROPERTIES_PATH).exists()
         assert constants.SERVICE_NAME in out.get_container(constants.CONTAINER_NAME).plan.services
 
+    @pytest.mark.parametrize("event", ["relation_created", "relation_changed"])
+    @patch.object(TLSCertificatesRequiresV4, "get_assigned_certificate", _assigned(set()))
+    def test_waiting_right_after_integrate(self, context, container, client_dir, event):
+        relation = ops.testing.Relation(constants.CERTIFICATES_RELATION)
+        state = _state(container, tls_relation=relation)
+        out = context.run(getattr(context.on, event)(relation), state)
+        assert out.unit_status == ops.WaitingStatus(constants.MSG_TLS_WAITING)
+
     @patch.object(TLSCertificatesRequiresV4, "get_assigned_certificate", _assigned({POD_FQDN}))
     def test_waiting_until_charm_identity_issued(self, context, container, client_dir):
         out = context.run(context.on.update_status(), _state(container))

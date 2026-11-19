@@ -14,7 +14,7 @@ import pytest
 from conftest import _SENSITIVE_KEY_SECRET, SENSITIVE_KEY_VALUE, make_ingress_relation
 
 import constants
-from nifi_rest_client import NifiClientError, NifiConnectionError
+from nifi_rest_client import NifiAuthError, NifiClientError, NifiConnectionError
 
 
 def _state_with_secret_and_relations(container, relations):
@@ -356,6 +356,16 @@ class TestGitRegistryRelation:
         assert state_out.unit_status == ops.MaintenanceStatus(constants.MSG_NIFI_STARTING)
 
     @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
+    def test_auth_error_goes_blocked(
+        self, mock_create, context, container, git_registry_relation_ready
+    ):
+        """Charm enters BlockedStatus when NiFi doesn't accept the charm's identity."""
+        mock_create.side_effect = NifiAuthError("TLS check failed: certificate verify failed")
+        state_in = _state_with_secret_and_relations(container, [git_registry_relation_ready])
+        state_out = context.run(context.on.pebble_ready(container), state_in)
+        assert state_out.unit_status == ops.BlockedStatus(constants.MSG_NIFI_API_AUTH_FAILED)
+
+    @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
     def test_api_error_goes_blocked(
         self, mock_create, context, container, git_registry_relation_ready
     ):
@@ -420,6 +430,29 @@ class TestGitRegistryRelation:
         mock_delete.side_effect = NifiConnectionError("NiFi API not reachable: Connection refused")
         state_in = _state_with_secret_and_relations(container, [])
         state_out = context.run(context.on.config_changed(), state_in)
+        assert state_out.unit_status == ops.ActiveStatus()
+
+    @patch("nifi_rest_client.NifiRestClient.delete_registry_client")
+    def test_no_relation_delete_auth_error_goes_blocked(self, mock_delete, context, container):
+        """NiFi rejecting the charm's identity blocks, even on the best-effort delete."""
+        mock_delete.side_effect = NifiAuthError("HTTP 403 from GET registry clients")
+        state_in = _state_with_secret_and_relations(container, [])
+        state_out = context.run(context.on.update_status(), state_in)
+        assert state_out.unit_status == ops.BlockedStatus(constants.MSG_NIFI_API_AUTH_FAILED)
+
+    @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")
+    def test_auth_error_clears_once_nifi_accepts_the_charm(
+        self, mock_create, context, container, git_registry_relation_ready
+    ):
+        """Blocked from an auth error clears on the next event that succeeds."""
+        mock_create.side_effect = NifiAuthError("HTTP 401 from GET registry clients")
+        state_in = _state_with_secret_and_relations(container, [git_registry_relation_ready])
+        blocked = context.run(context.on.update_status(), state_in)
+        assert blocked.unit_status == ops.BlockedStatus(constants.MSG_NIFI_API_AUTH_FAILED)
+
+        mock_create.side_effect = None
+        mock_create.return_value = {"id": "test-id"}
+        state_out = context.run(context.on.update_status(), blocked)
         assert state_out.unit_status == ops.ActiveStatus()
 
     @patch("nifi_rest_client.NifiRestClient.create_or_update_registry_client")

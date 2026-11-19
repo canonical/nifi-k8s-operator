@@ -51,6 +51,7 @@ MSG_CONFIG_WRITE_FAILED = "Failed to write NiFi configuration"
 MSG_GIT_REGISTRY_NOT_READY = "Waiting for git-registry relation data"
 MSG_INGRESS_NOT_READY = "Waiting for ingress URL"
 MSG_GIT_REGISTRY_API_ERROR = "Failed to configure NiFi flow registry client"
+MSG_NIFI_API_AUTH_FAILED = "Cannot authenticate to NiFi API"
 MSG_GIT_REGISTRY_SSH_UNSUPPORTED = (
     "NiFi flow registry does not support SSH auth; "
     "reconfigure git-integrator with credentials (personal access token)"

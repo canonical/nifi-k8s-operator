@@ -112,6 +112,7 @@ class TestPebbleLayer:
             constants.WORKLOAD_USER,
             constants.WORKLOAD_GROUP,
         )
+        assert service.kill_delay == constants.NIFI_KILL_DELAY
         # override: replace drops the rock's baked service environment, so the
         # layer must redeclare it: JAVA_HOME (the rock does not register the
         # java alternative) and NIFI_LOG_DIR + NIFI_OVERRIDE_NIFIENV (logs to

@@ -30,7 +30,34 @@ nifi.flow.configuration.file={{ data_dir }}/conf/flow.json.gz
 nifi.database.directory={{ data_dir }}/database_repository
 nifi.flowfile.repository.directory={{ data_dir }}/flowfile_repository
 nifi.content.repository.directory.default={{ content_repo_dir }}
+# NiFi disables content archiving when this is unset, so content of completed
+# FlowFiles is deleted at once and provenance "view content"/"replay" fails.
+nifi.content.repository.archive.enabled=true
+nifi.content.repository.archive.max.retention.period=3 hours
+nifi.content.repository.archive.max.usage.percentage=90%
+
+# Provenance Repository
+# This file replaces the rock's nifi.properties, so any property left out falls
+# back to NiFi's compiled-in default rather than the shipped one. For provenance
+# those fallbacks differ: the implementation defaults to the in-memory
+# VolatileProvenanceRepository (nothing reaches the provenance-repo storage) and
+# an unset indexed.fields leaves only EventTime searchable. Values below mirror
+# the NiFi 2.10 distribution defaults; keep them in sync on NiFi upgrades.
+nifi.provenance.repository.implementation=org.apache.nifi.provenance.WriteAheadProvenanceRepository
 nifi.provenance.repository.directory.default={{ provenance_repo_dir }}
+# Must stay below the provenance-repo storage minimum-size in charmcraft.yaml.
+nifi.provenance.repository.max.storage.size=10 GB
+nifi.provenance.repository.max.storage.time=30 days
+nifi.provenance.repository.rollover.time=10 mins
+nifi.provenance.repository.rollover.size=100 MB
+nifi.provenance.repository.query.threads=2
+nifi.provenance.repository.index.threads=2
+nifi.provenance.repository.compress.on.rollover=true
+nifi.provenance.repository.always.sync=false
+nifi.provenance.repository.indexed.fields=EventType, FlowFileUUID, Filename, ProcessorID, Relationship
+nifi.provenance.repository.index.shard.size=500 MB
+nifi.provenance.repository.max.attribute.length=65536
+nifi.provenance.repository.concurrent.merge.threads=2
 
 # State Management
 nifi.state.management.configuration.file={{ state_management_xml_path }}

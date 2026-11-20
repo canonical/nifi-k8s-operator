@@ -382,6 +382,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
                     "startup": "enabled",
                     "user": constants.WORKLOAD_USER,
                     "group": constants.WORKLOAD_GROUP,
+                    "kill-delay": constants.NIFI_KILL_DELAY,
                     # override: replace wipes the rock's baked service environment,
                     # so it is redeclared here. JAVA_HOME is required or nifi.sh
                     # cannot find Java (the rock does not register the java

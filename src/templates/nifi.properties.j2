@@ -35,8 +35,7 @@ nifi.content.repository.directory.default={{ content_repo_dir }}
 nifi.content.repository.archive.enabled=true
 nifi.content.repository.archive.max.retention.period=3 hours
 nifi.content.repository.archive.max.usage.percentage=90%
-juju destroy-model jubilant-03f3654c --no-prompt --destroy-storage --force
-rm -rf ~/nifi-k8s-issue23 ~/.venvs/nifi-k8s-unit ~/.venvs/nifi-k8s-integration
+
 # Provenance Repository
 # This file replaces the rock's nifi.properties, so any property left out falls
 # back to NiFi's compiled-in default rather than the shipped one. For provenance

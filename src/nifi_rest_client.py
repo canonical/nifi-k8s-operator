@@ -17,8 +17,9 @@ from urllib.parse import urlencode, urlsplit
 logger = logging.getLogger(__name__)
 
 REGISTRY_CLIENTS_PATH = "/controller/registry-clients"
-# HTTP statuses that mean NiFi is still starting or briefly unavailable.
-RETRYABLE_STATUSES = frozenset({503})
+# HTTP statuses that mean NiFi is still starting or briefly unavailable
+# (502/504 if a proxy sits in front of it).
+RETRYABLE_STATUSES = frozenset({502, 503, 504})
 
 
 class NifiClientError(Exception):
@@ -61,13 +62,11 @@ class NifiRestClient:
         owner, repo_name = parts[-2], parts[-1]
         api_base_url = f"{parsed.scheme}://{parsed.netloc}"
 
-        # TODO: GitLab detection limitation
-        # Currently detecting GitLab by checking if "gitlab" appears in the URL.
-        # This fails for self-hosted GitLab instances with custom domains (e.g., git.company.com).
-        # Tracked in: https://github.com/canonical/nifi-k8s-operator/issues/XX
-        # Enhancement proposal for git-integrator: https://github.com/canonical/git-integrator/issues/XX
-        # Once git-integrator provides explicit provider type information, update this logic.
-        is_gitlab = "gitlab" in repository_url.lower()
+        # TODO: GitLab is detected from the host name only, so self-hosted GitLab
+        # on a custom domain (e.g. git.company.com) is treated as GitHub. Fixing it
+        # needs git-integrator to send the provider type.
+        # Tracked in: https://github.com/canonical/nifi-k8s-operator/issues/35
+        is_gitlab = "gitlab" in (parsed.hostname or "")
 
         if is_gitlab:
             if not token:
@@ -183,7 +182,7 @@ class NifiRestClient:
             query: Query parameters.
 
         Raises:
-            NifiConnectionError: If NiFi can't be reached, times out, answers 503,
+            NifiConnectionError: If NiFi can't be reached, times out, answers 502, 503 or 504,
                 or drops the connection mid-reply.
             NifiClientError: If NiFi answers with any other error, or invalid JSON.
         """

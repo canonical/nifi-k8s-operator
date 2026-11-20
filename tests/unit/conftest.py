@@ -2,7 +2,7 @@
 # See LICENSE file for licensing details.
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import ops
 import ops.testing
@@ -317,12 +317,7 @@ def make_ingress_relation(url: str | None = None) -> ops.testing.Relation:
 
 
 @pytest.fixture(autouse=True)
-def _block_http(monkeypatch):
-    """Prevent accidental real HTTP calls in unit tests."""
-    with (
-        patch("requests.Session") as mock_session_cls,
-        patch("nifi_rest_client.ControllerApi") as mock_controller_cls,
-    ):
-        mock_session_cls.return_value = MagicMock()
-        mock_controller_cls.return_value = MagicMock()
+def _block_http():
+    """Prevent real calls to the NiFi API in unit tests; every call returns {}."""
+    with patch("nifi_rest_client.NifiRestClient._request", return_value={}):
         yield

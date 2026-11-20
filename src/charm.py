@@ -13,7 +13,12 @@ import ops
 from charms.traefik_k8s.v2.ingress import IngressPerAppRequirer
 
 import constants
-from nifi_rest_client import NifiClientError, NifiConnectionError, NifiRestClient
+from nifi_rest_client import (
+    NifiAuthError,
+    NifiClientError,
+    NifiConnectionError,
+    NifiRestClient,
+)
 from properties_manager import NifiPropertiesManager
 
 logger = logging.getLogger(__name__)
@@ -97,17 +102,25 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         )
 
     def _delete_git_registry_client(self) -> None:
-        """Delete NiFi flow registry client via REST API. Best-effort."""
+        """Delete NiFi flow registry client via REST API.
+
+        Best-effort, except when NiFi rejects the charm's identity: that needs the
+        operator, so it raises ExitWithStatusError(BlockedStatus).
+        """
         try:
             self._nifi_client.delete_registry_client(constants.FLOW_REGISTRY_CLIENT_NAME)
-        except (NifiClientError, NifiConnectionError) as e:
+        except NifiAuthError as e:
+            logger.error("NiFi API rejected the charm's identity: %s", e)
+            raise ExitWithStatusError(constants.MSG_NIFI_API_AUTH_FAILED, ops.BlockedStatus)
+        except NifiClientError as e:
             logger.warning("Failed to delete flow registry client (best-effort): %s", e)
 
     def _reconcile_git_registry(self) -> None:
         """Reconcile git-registry: configure registry client if relation is ready, else clean up.
 
         Raises:
-            ExitWithStatusError(BlockedStatus): If SSH auth is configured or API call fails.
+            ExitWithStatusError(BlockedStatus): If SSH auth is configured, the API call
+                fails, or NiFi doesn't accept the charm's identity.
             ExitWithStatusError(MaintenanceStatus): If NiFi API is not yet reachable.
         """
         if not self.git_registry.relations:
@@ -119,6 +132,9 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         except NifiConnectionError as e:
             logger.warning("NiFi API not reachable yet, Juju will retry on next hook: %s", e)
             raise ExitWithStatusError(constants.MSG_NIFI_STARTING, ops.MaintenanceStatus)
+        except NifiAuthError as e:
+            logger.error("NiFi API rejected the charm's identity: %s", e)
+            raise ExitWithStatusError(constants.MSG_NIFI_API_AUTH_FAILED, ops.BlockedStatus)
         except NifiClientError as e:
             logger.exception("Failed to configure flow registry client: %s", e)
             raise ExitWithStatusError(constants.MSG_GIT_REGISTRY_API_ERROR, ops.BlockedStatus)

@@ -12,7 +12,7 @@ dependencies = [
 [dependency-groups]
 lint = ["ruff", "codespell"]
 format = ["ruff"]
-unit = ["coverage[toml]", "ops[testing]", "pytest"]
+unit = ["coverage[toml]", "cryptography", "ops[testing]", "pytest"]
 integration = ["jubilant", "pytest", "pyyaml", "lightkube"]
 
 [tool.coverage.run]

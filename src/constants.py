@@ -38,6 +38,12 @@ JAVA_HOME = "/usr/lib/jvm/java-21-openjdk-amd64"
 # without that flag it silently falls back to $NIFI_HOME/logs.
 NIFI_LOG_DIR = "/var/log/nifi"
 
+# Pebble waits this long after SIGTERM before SIGKILL. NiFi's bootstrap allows the
+# JVM up to 20s (graceful.shutdown.seconds in bootstrap.conf) to flush the
+# repositories; Pebble's 5s default would cut that short on every restart. Kept
+# below Juju's 30s pod terminationGracePeriodSeconds so a pod deletion does too.
+NIFI_KILL_DELAY = "25s"
+
 # Juju config & secret schema
 SENSITIVE_PROPS_KEY_CONFIG = "sensitive-props-key"
 SENSITIVE_PROPS_KEY_FIELD = "sensitive-props-key"

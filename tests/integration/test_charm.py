@@ -5,6 +5,7 @@
 
 import json
 import pathlib
+import time
 
 import jubilant
 import lightkube
@@ -17,11 +18,13 @@ from conftest import (
     make_sensitive_key,
     nifi_get,
     nifi_post,
+    nifi_request,
 )
 from helpers import (
     assert_security_context,
     generate_container_securitycontext_map,
     get_pod_names,
+    replace_pod,
 )
 from lightkube.resources.core_v1 import Pod
 
@@ -106,6 +109,23 @@ def test_workload_writable_as_non_root(juju: jubilant.Juju) -> None:
         assert "WRITABLE" in output
 
 
+def test_provenance_repository_is_persistent(juju: jubilant.Juju) -> None:
+    """NiFi starts the write-ahead provenance repository, not the in-memory fallback.
+
+    With the implementation unset NiFi creates the VolatileProvenanceRepository,
+    which never writes to the provenance-repo mount and loses provenance whenever
+    the pod is replaced.
+    """
+    created = juju.ssh(
+        UNIT,
+        f"grep -h 'Creating Provenance Repository' {constants.NIFI_LOG_DIR}/nifi-app*.log",
+        container=constants.CONTAINER_NAME,
+    )
+    assert created.strip(), "NiFi did not log which provenance repository it created"
+    assert "VolatileProvenanceRepository" not in created
+    assert "WriteAheadProvenanceRepository" in created
+
+
 def test_pebble_health_check_up(juju: jubilant.Juju):
     """The NiFi Pebble readiness check reports UP after the charm is active."""
     output = juju.ssh(UNIT, "/charm/bin/pebble checks", container=constants.CONTAINER_NAME)
@@ -187,3 +207,95 @@ def test_data_persists_across_rotation(juju: jubilant.Juju):
         pg["component"]["name"] for pg in json.loads(list_output).get("processGroups", [])
     ]
     assert pg_name in group_names, f"Process group lost after rotation: {group_names}"
+
+
+def _set_run_status(juju: jubilant.Juju, processor: dict, state: str) -> dict:
+    """Set a processor's run status and return the updated processor entity."""
+    return json.loads(
+        nifi_request(
+            juju,
+            "PUT",
+            f"/nifi-api/processors/{processor['id']}/run-status",
+            {"revision": processor["revision"], "state": state},
+        )
+    )
+
+
+def _provenance_events(juju: jubilant.Juju, processor_id: str) -> list[dict]:
+    """Return the provenance events of one processor, searched via the ProcessorID index."""
+    request = {
+        "maxResults": 10000,
+        "searchTerms": {"ProcessorID": {"value": processor_id, "inverse": False}},
+    }
+    query = json.loads(
+        nifi_post(juju, "/nifi-api/provenance", {"provenance": {"request": request}})
+    )["provenance"]
+    try:
+        for _ in range(60):
+            if query["finished"]:
+                return query["results"]["provenanceEvents"]
+            time.sleep(1)
+            query = json.loads(nifi_get(juju, f"/nifi-api/provenance/{query['id']}"))["provenance"]
+        raise TimeoutError(f"Provenance query {query['id']} did not finish")
+    finally:
+        nifi_request(juju, "DELETE", f"/nifi-api/provenance/{query['id']}")
+
+
+def test_provenance_and_content_survive_pod_replacement(juju: jubilant.Juju):
+    """Provenance events and their archived content survive a pod replacement.
+
+    The pod is deleted so Kubernetes recreates it on the same Juju storage, which
+    is the point where the in-memory provenance repository used to lose history.
+    The generated FlowFiles are auto-terminated, so their content only remains
+    viewable if the content repository archives it.
+    """
+    processor = json.loads(
+        nifi_post(
+            juju,
+            "/nifi-api/process-groups/root/processors",
+            {
+                "revision": {"version": 0},
+                "component": {
+                    "name": "provenance-persistence-test",
+                    "type": "org.apache.nifi.processors.standard.GenerateFlowFile",
+                    "config": {
+                        "schedulingPeriod": "1 sec",
+                        "autoTerminatedRelationships": ["success"],
+                        "properties": {"File Size": "1 KB"},
+                    },
+                },
+            },
+        )
+    )
+    processor = _set_run_status(juju, processor, "RUNNING")
+    time.sleep(10)
+    _set_run_status(juju, processor, "STOPPED")
+
+    before = {e["eventId"]: e for e in _provenance_events(juju, processor["id"])}
+    created = [e for e in before.values() if e["eventType"] == "CREATE"]
+    assert created, f"No CREATE provenance events recorded: {list(before.values())[:3]}"
+
+    lightkube_client = lightkube.Client()
+    replace_pod(
+        lightkube_client, get_pod_names(lightkube_client, juju.model, APP_NAME)[0], juju.model
+    )
+    juju.wait(jubilant.all_active, delay=10, timeout=600)
+
+    # After a restart NiFi re-indexes recovered events in the background.
+    after: set[int] = set()
+    for _ in range(36):
+        after = {e["eventId"] for e in _provenance_events(juju, processor["id"])}
+        if before.keys() <= after:
+            break
+        time.sleep(5)
+    assert before.keys() <= after, (
+        f"{len(before.keys() - after)}/{len(before)} provenance events lost on pod replacement"
+    )
+
+    event_id = created[0]["eventId"]
+    event = json.loads(nifi_get(juju, f"/nifi-api/provenance-events/{event_id}"))[
+        "provenanceEvent"
+    ]
+    assert event["outputContentAvailable"], f"Content of event {event_id} was not archived"
+    content = nifi_get(juju, f"/nifi-api/provenance-events/{event_id}/content/output")
+    assert len(content) == 1024

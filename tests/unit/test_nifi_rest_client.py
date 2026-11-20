@@ -194,6 +194,15 @@ class TestCreateOrUpdate:
             "Access Token": "glpat-tok",
         }
 
+    def test_gitlab_in_path_is_still_github(self, client, nifi):
+        client.create_or_update_registry_client(
+            name="c", repository_url="https://github.com/org/gitlab-runner.git"
+        )
+
+        [(_, body)] = _calls(nifi, "POST")
+        assert body["component"]["type"] == "org.apache.nifi.github.GitHubFlowRegistryClient"
+        assert body["component"]["properties"]["Repository Name"] == "gitlab-runner"
+
     def test_raises_on_invalid_url(self, client, nifi):
         with pytest.raises(ValueError, match="Cannot extract owner/repo"):
             client.create_or_update_registry_client(
@@ -249,11 +258,13 @@ class TestDelete:
     @pytest.mark.parametrize(
         ("status", "expected_exception", "expected_message"),
         [
+            (502, NifiConnectionError, "NiFi API not reachable"),
             (503, NifiConnectionError, "NiFi API not reachable"),
+            (504, NifiConnectionError, "NiFi API not reachable"),
             (404, NifiClientError, "Registry client delete failed"),
             (500, NifiClientError, "Registry client delete failed"),
         ],
-        ids=["503", "404", "500"],
+        ids=["502", "503", "504", "404", "500"],
     )
     def test_delete_http_errors(self, client, nifi, status, expected_exception, expected_message):
         nifi.add("to-delete", "del-id", 1)
@@ -266,11 +277,13 @@ class TestErrors:
     @pytest.mark.parametrize(
         ("status", "expected_exception", "expected_message"),
         [
+            (502, NifiConnectionError, "NiFi API not reachable"),
             (503, NifiConnectionError, "NiFi API not reachable"),
+            (504, NifiConnectionError, "NiFi API not reachable"),
             (404, NifiClientError, "Failed to list registry clients"),
             (500, NifiClientError, "Failed to list registry clients"),
         ],
-        ids=["503", "404", "500"],
+        ids=["502", "503", "504", "404", "500"],
     )
     def test_list_http_errors(self, client, nifi, status, expected_exception, expected_message):
         nifi.fail["GET"] = (status, "boom")

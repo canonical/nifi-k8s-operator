@@ -6,7 +6,7 @@
 These tests deliberately use a loopback HTTP and HTTPS server instead of mocks: the
 client's job is the HTTP, TLS and JSON handling, so mocking urllib would test
 nothing real. The server only listens on 127.0.0.1 and each test takes milliseconds.
-One test patches urlopen, for TLS errors that a real socket only produces now and then.
+One test patches the opener, for TLS errors that a real socket only produces now and then.
 """
 
 import contextlib
@@ -51,6 +51,8 @@ class NifiTestServer:
         self.fail: dict[str, tuple[int, str]] = {}
         # Promise more bytes than are sent, like a connection dropped mid-reply.
         self.truncate = False
+        # Location header to send, to answer with a redirect.
+        self.location: str | None = None
         self.delay = 0.0
         self._next_id = 0
 
@@ -122,6 +124,8 @@ def _serve(api: NifiTestServer, ssl_context: ssl.SSLContext | None = None):
             self.send_response(status)
             extra = 50 if api.truncate else 0
             self.send_header("Content-Length", str(len(encoded) + extra))
+            if api.location:
+                self.send_header("Location", api.location)
             self.end_headers()
             self.wfile.write(encoded)
 
@@ -242,6 +246,24 @@ class TestCreateOrUpdate:
         assert body["component"]["type"] == "org.apache.nifi.github.GitHubFlowRegistryClient"
         assert body["component"]["properties"]["Repository Name"] == "gitlab-runner"
 
+    @pytest.mark.parametrize(
+        ("repository_url", "api_url"),
+        [
+            ("https://github.com/owner/repo.git", "https://api.github.com/"),
+            ("https://notgithub.com/owner/repo.git", "https://notgithub.com/api/v1/"),
+            (
+                "https://github.com.example.org/owner/repo",
+                "https://github.com.example.org/api/v1/",
+            ),
+        ],
+        ids=["github", "similar-name", "github-in-host"],
+    )
+    def test_github_api_url_only_for_github_com(self, client, nifi, repository_url, api_url):
+        client.create_or_update_registry_client(name="c", repository_url=repository_url)
+
+        [(_, body)] = _calls(nifi, "POST")
+        assert body["component"]["properties"]["GitHub API URL"] == api_url
+
     def test_raises_on_invalid_url(self, client, nifi):
         with pytest.raises(ValueError, match="Cannot extract owner/repo"):
             client.create_or_update_registry_client(
@@ -342,6 +364,13 @@ class TestErrors:
         nifi.truncate = True
         with pytest.raises(expected_exception, match="<body unreadable>"):
             client.delete_registry_client("any")
+
+    def test_redirect_is_not_followed(self, client, nifi):
+        nifi.fail["GET"] = (302, "moved")
+        nifi.location = f"{nifi.url}/elsewhere"
+        with pytest.raises(NifiClientError, match="HTTP 302"):
+            client.delete_registry_client("any")
+        assert len(nifi.requests) == 1
 
     def test_connection_refused_raises_connection_error(self):
         # Bind then close a socket to get a port nothing listens on.
@@ -505,6 +534,11 @@ def nifi_https(pki):
 
 
 class TestHttps:
+    def test_tls_files_need_an_https_url(self, pki):
+        """Over http urllib would ignore the TLS context and call in plain text."""
+        with pytest.raises(ValueError, match="needs an https:// URL"):
+            NifiRestClient("http://localhost:8080", tls=pki.client_tls())
+
     def test_certificates_signed_by_an_intermediate(self, pki):
         # Like Vault or a corporate CA: both certificates come from an intermediate,
         # each cert.pem carries it, and both sides trust only the root.
@@ -601,7 +635,7 @@ class TestHttps:
     def test_tls_error_while_reading_the_reply(self, pki, error, expected):
         # With TLS 1.3 these arrive unwrapped, from reading the reply.
         client = NifiRestClient("https://localhost:8443", timeout=2, tls=pki.client_tls())
-        with patch("nifi_rest_client.urllib.request.urlopen", side_effect=error):
+        with patch("nifi_rest_client.urllib.request.OpenerDirector.open", side_effect=error):
             with pytest.raises(expected):
                 client.delete_registry_client("any")
 

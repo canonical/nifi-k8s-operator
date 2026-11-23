@@ -57,6 +57,17 @@ class ClientTls:
     key: Path
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Report a redirect as an HTTP error instead of following it.
+
+    NiFi's API doesn't redirect, and following one could send the call to
+    another host or drop TLS.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        return None
+
+
 class NifiRestClient:
     """Thin client for NiFi's /nifi-api/controller/registry-clients endpoints.
 
@@ -66,6 +77,10 @@ class NifiRestClient:
     """
 
     def __init__(self, base_url: str, timeout: float = 30, tls: ClientTls | None = None):
+        # Without https, urllib never uses the TLS context: the calls would go out
+        # in plain text with no error.
+        if tls is not None and urlsplit(base_url).scheme != "https":
+            raise ValueError(f"A client with TLS files needs an https:// URL, got {base_url}")
         self._api_url = f"{base_url.rstrip('/')}/nifi-api"
         self._timeout = timeout
         self._tls = tls
@@ -120,7 +135,7 @@ class NifiRestClient:
             component_type = "org.apache.nifi.github.GitHubFlowRegistryClient"
             api_url = (
                 "https://api.github.com/"
-                if "github.com" in api_base_url.lower()
+                if parsed.hostname == "github.com"
                 else f"{api_base_url}/api/v1/"
             )
             properties = {
@@ -231,9 +246,12 @@ class NifiRestClient:
             request.add_header("Content-Type", "application/json")
 
         context = self._ssl_context()
+        handlers: list[urllib.request.BaseHandler] = [_NoRedirect()]
+        if context is not None:
+            handlers.append(urllib.request.HTTPSHandler(context=context))
         try:
-            with urllib.request.urlopen(
-                request, timeout=self._timeout, context=context
+            with urllib.request.build_opener(*handlers).open(
+                request, timeout=self._timeout
             ) as response:
                 payload = response.read()
         except urllib.error.HTTPError as e:

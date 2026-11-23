@@ -71,6 +71,10 @@ storage:
     minimum-size: 20G
 
 requires:
+  certificates:
+    interface: tls-certificates
+    optional: true
+    limit: 1
   git-registry:
     interface: git
     optional: true

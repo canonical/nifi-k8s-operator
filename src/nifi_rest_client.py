@@ -60,11 +60,15 @@ class ClientTls:
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """Report a redirect as an HTTP error instead of following it.
 
-    NiFi's API doesn't redirect, and following one could send the call to
-    another host or drop TLS.
+    NiFi's API doesn't redirect, so a redirect means a misconfiguration.
+    Following one, even https to https, could send the call and the charm's
+    client certificate to another host, or drop TLS.
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        logger.warning(
+            "Not following HTTP %s redirect from %s to %s", code, req.full_url, newurl
+        )
         return None
 
 

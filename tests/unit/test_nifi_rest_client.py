@@ -365,12 +365,18 @@ class TestErrors:
         with pytest.raises(expected_exception, match="<body unreadable>"):
             client.delete_registry_client("any")
 
-    def test_redirect_is_not_followed(self, client, nifi):
-        nifi.fail["GET"] = (302, "moved")
+    @pytest.mark.parametrize("status", [301, 302, 307, 308])
+    def test_redirect_is_not_followed(self, client, nifi, caplog, status):
+        nifi.fail["GET"] = (status, "moved")
         nifi.location = f"{nifi.url}/elsewhere"
-        with pytest.raises(NifiClientError, match="HTTP 302"):
+        with pytest.raises(NifiClientError, match=f"HTTP {status}"):
             client.delete_registry_client("any")
         assert len(nifi.requests) == 1
+        assert (
+            f"Not following HTTP {status} redirect from {nifi.url}/nifi-api/"
+            in caplog.text
+        )
+        assert f"to {nifi.url}/elsewhere" in caplog.text
 
     def test_connection_refused_raises_connection_error(self):
         # Bind then close a socket to get a port nothing listens on.

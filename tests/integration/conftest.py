@@ -79,24 +79,26 @@ def _nifi_base_url(juju: jubilant.Juju) -> str:
     return f"http://{address}:{constants.NIFI_PORT}"
 
 
+def nifi_request(juju: jubilant.Juju, method: str, path: str, payload: dict | None = None) -> str:
+    """Call the NiFi REST API from the test runner and return the response body."""
+    req = urllib.request.Request(
+        f"{_nifi_base_url(juju)}{path}",
+        data=json.dumps(payload).encode() if payload is not None else None,
+        headers={"Content-Type": "application/json"},
+        method=method,
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310 (fixed http scheme)
+        return resp.read().decode()
+
+
 def nifi_get(juju: jubilant.Juju, path: str) -> str:
     """GET the NiFi REST API from the test runner and return the response body."""
-    url = f"{_nifi_base_url(juju)}{path}"
-    with urllib.request.urlopen(url, timeout=10) as resp:  # noqa: S310 (fixed http scheme)
-        return resp.read().decode()
+    return nifi_request(juju, "GET", path)
 
 
 def nifi_post(juju: jubilant.Juju, path: str, payload: dict) -> str:
     """POST JSON to the NiFi REST API from the test runner and return the body."""
-    url = f"{_nifi_base_url(juju)}{path}"
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310 (fixed http scheme)
-        return resp.read().decode()
+    return nifi_request(juju, "POST", path, payload)
 
 
 def get_nifi_sensitive_key(juju: jubilant.Juju) -> str:

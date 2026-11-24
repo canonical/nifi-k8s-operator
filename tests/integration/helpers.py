@@ -3,9 +3,11 @@
 
 """Utilities for testing security context and user privileges in charms."""
 
+import time
 from typing import Dict, TypedDict
 
 import lightkube
+from lightkube.core.exceptions import ApiError
 from lightkube.resources.core_v1 import Pod
 
 
@@ -92,3 +94,34 @@ def assert_security_context(
     security_context = container.securityContext
     for key, value in container_securitycontext_map.get(container_name).items():
         assert getattr(security_context, key) == value
+
+
+def replace_pod(
+    client: lightkube.Client, pod_name: str, namespace: str, timeout: float = 600
+) -> None:
+    """Delete a StatefulSet pod and wait until its replacement is Ready.
+
+    The replacement keeps the name (and PVCs) but gets a new UID, which is how
+    the old pod is told apart from the new one while Kubernetes recreates it.
+    """
+    old_uid = client.get(Pod, pod_name, namespace=namespace).metadata.uid
+    client.delete(Pod, pod_name, namespace=namespace)
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            pod = client.get(Pod, pod_name, namespace=namespace)
+        except ApiError as e:
+            if e.status.code != 404:
+                raise
+        else:
+            statuses = pod.status.containerStatuses or []
+            if (
+                pod.metadata.uid != old_uid
+                and pod.status.phase == "Running"
+                and statuses
+                and all(s.ready for s in statuses)
+            ):
+                return
+        time.sleep(5)
+    raise TimeoutError(f"Pod {pod_name} was not replaced within {timeout}s")

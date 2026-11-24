@@ -5,6 +5,7 @@
 
 import pathlib
 import re
+import xml.etree.ElementTree as ET
 
 import pytest
 import yaml
@@ -13,6 +14,7 @@ import constants
 from properties_manager import NifiPropertiesManager
 
 _TEST_KEY = "test-sensitive-key-32-characters!"
+_IDENTITY = "CN=charm.nifi-k8s.test-model.svc.cluster.local"
 
 # Juju storage sizes (M/G/T/P/E) and NiFi data sizes (KB/MB/GB/TB) are both binary.
 _SIZE_EXPONENTS = {"K": 1, "M": 2, "G": 3, "T": 4, "P": 5, "E": 6}
@@ -121,3 +123,43 @@ class TestRenderStateManagementXml:
         gen = NifiPropertiesManager(templates_dir="nonexistent/path")
         with pytest.raises(RuntimeError, match="Failed to render state-management.xml"):
             gen.render_state_management_xml()
+
+
+class TestRenderAuthorizersXml:
+    def test_identity_is_xml_escaped(self, generator):
+        identity = "CN=a<b&c\"d"
+        root = ET.fromstring(generator.render_authorizers_xml(identity))
+        seeds = [p.text for p in root.iter("property") if "Identity" in p.get("name")]
+        assert seeds == [identity, identity]
+
+    def test_seeds_charm_identity_with_files_on_the_volume(self, generator):
+        root = ET.fromstring(generator.render_authorizers_xml(_IDENTITY))
+        values = {}
+        for section in root:
+            identifier = section.findtext("identifier")
+            for prop in section.findall("property"):
+                values[(identifier, prop.get("name"))] = prop.text
+        assert values[("file-user-group-provider", "Users File")] == constants.USERS_XML_PATH
+        assert values[("file-user-group-provider", "Initial User Identity 1")] == _IDENTITY
+        assert (
+            values[("file-access-policy-provider", "Authorizations File")]
+            == constants.AUTHORIZATIONS_XML_PATH
+        )
+        assert values[("file-access-policy-provider", "Initial Admin Identity")] == _IDENTITY
+        assert (
+            values[("managed-authorizer", "Access Policy Provider")]
+            == "file-access-policy-provider"
+        )
+        assert constants.USERS_XML_PATH.startswith(constants.DATA_DIR)
+        assert constants.AUTHORIZATIONS_XML_PATH.startswith(constants.DATA_DIR)
+
+    def test_no_group_seeds(self, generator):
+        """Groups and their policies come from the identity work, not from seeds."""
+        content = generator.render_authorizers_xml(_IDENTITY)
+        assert "Initial Admin Group" not in content
+        assert "Initial Group Identity" not in content
+
+    def test_template_error_raises_runtime_error(self):
+        gen = NifiPropertiesManager(templates_dir="nonexistent/path")
+        with pytest.raises(RuntimeError, match="Failed to render authorizers.xml"):
+            gen.render_authorizers_xml(_IDENTITY)

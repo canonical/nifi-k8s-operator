@@ -4,7 +4,6 @@
 
 """Charm the Apache NiFi service."""
 
-import hashlib
 import ipaddress
 import logging
 import os
@@ -274,6 +273,23 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         )
         return CertificateRequestAttributes(common_name=common_name) if common_name else None
 
+    def _charm_identity(self) -> str | None:
+        """The charm's name in NiFi, seeded as its first admin.
+
+        It's the name NiFi will compare against once it serves HTTPS and its
+        identity mapping removes the library's random ID from the certificate
+        subject. None without the certificates relation, or if either
+        certificate name doesn't fit (the unit is then Blocked and never gets
+        the certificate this identity is for).
+        """
+        if not self.model.get_relation(constants.CERTIFICATES_RELATION):
+            return None
+        requests = self._certificate_requests()
+        if not requests:
+            return None
+        _, identity = requests
+        return f"CN={identity.common_name}"
+
     def _certificate_requests(self) -> list[CertificateRequestAttributes]:
         """Both requests, or none if either name doesn't fit.
 
@@ -308,10 +324,16 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         # the library's secrets.
         return Path(self.charm_dir).parent / constants.CLIENT_TLS_DIR_NAME
 
-    def _push_if_changed(self, path: str, content: str, permissions: int) -> None:
-        """Push a file to the workload only when its content differs."""
-        if self._container.exists(path) and self._container.pull(path).read() == content:
-            return
+    def _push_if_changed(self, path: str, content: str, permissions: int) -> bool:
+        """Push a file to the workload only when its content or mode differs.
+
+        Returns True if the content changed. A mode-only fix returns False, so
+        it doesn't restart NiFi.
+        """
+        exists = self._container.exists(path)
+        same_content = exists and self._container.pull(path).read() == content
+        if same_content and self._container.list_files(path)[0].permissions == permissions:
+            return False
         self._container.push(
             path,
             content,
@@ -320,6 +342,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             permissions=permissions,
             make_dirs=True,
         )
+        return not same_content
 
     @staticmethod
     def _cert_with_intermediates(cert: ProviderCertificate) -> str:
@@ -595,26 +618,31 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         except RuntimeError as e:
             logger.exception("Failed to render nifi.properties: %s", e)
             raise ExitWithStatusError(constants.MSG_CONFIG_WRITE_FAILED, ops.BlockedStatus)
-        rendered_hash = hashlib.sha256(rendered.encode()).hexdigest()
 
+        # 0600: it holds the sensitive properties key.
         try:
-            if self._container.exists(constants.NIFI_PROPERTIES_PATH):
-                on_disk = self._container.pull(constants.NIFI_PROPERTIES_PATH).read()
-                on_disk_hash = hashlib.sha256(on_disk.encode()).hexdigest()
-                if rendered_hash == on_disk_hash:
-                    return False
-
-            self._container.push(
-                constants.NIFI_PROPERTIES_PATH,
-                rendered,
-                user=constants.WORKLOAD_USER,
-                group=constants.WORKLOAD_GROUP,
-                make_dirs=True,
-            )
+            return self._push_if_changed(constants.NIFI_PROPERTIES_PATH, rendered, 0o600)
         except ops.pebble.Error as e:
             logger.exception("Failed to write nifi.properties: %s", e)
             raise ExitWithStatusError(constants.MSG_CONFIG_WRITE_FAILED, ops.BlockedStatus)
-        return True
+
+    def _write_authorizers_xml(self) -> None:
+        """Write authorizers.xml, with the charm identity as first admin.
+
+        Only with the certificates relation. NiFi reads it only once it serves
+        HTTPS, and seeds the identity only while its users and authorizations
+        files are empty, so it must be on disk before then. Without the
+        relation an existing file is left alone; NiFi ignores it over HTTP.
+        """
+        charm_identity = self._charm_identity()
+        if charm_identity is None:
+            return
+        try:
+            rendered = self._renderer.render_authorizers_xml(charm_identity)
+            self._push_if_changed(constants.AUTHORIZERS_XML_PATH, rendered, 0o644)
+        except (RuntimeError, ops.pebble.Error) as e:
+            logger.exception("Failed to write authorizers.xml: %s", e)
+            raise ExitWithStatusError(constants.MSG_CONFIG_WRITE_FAILED, ops.BlockedStatus)
 
     def _write_state_management_xml(self) -> None:
         """Write state-management.xml to the workload container if not already present.
@@ -734,7 +762,8 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         2. If secret-changed for our key, rotate the key via nifi.sh.
         3. Check git-registry and ingress relation readiness.
         4. Ensure storage directories exist.
-        5. Render and push nifi.properties and state-management.xml.
+        5. Render and push authorizers.xml (with the certificates relation),
+           nifi.properties and state-management.xml.
         6. Apply pebble layer and (re)start the service as needed.
         7. Wait for NiFi to become ready.
         8. Configure or clean up the flow registry client via REST API.
@@ -750,6 +779,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             self._check_ingress()
             self._ensure_storage_dirs()
             was_running = self._service_is_running()
+            self._write_authorizers_xml()
             config_changed = self._write_nifi_properties(new_key)
             self._write_state_management_xml()
 

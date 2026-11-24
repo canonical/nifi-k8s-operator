@@ -9,8 +9,11 @@ Built on the standard library (urllib.request and json)
 import http.client
 import json
 import logging
+import ssl
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlsplit
 
@@ -20,6 +23,8 @@ REGISTRY_CLIENTS_PATH = "/controller/registry-clients"
 # HTTP statuses that mean NiFi is still starting or briefly unavailable
 # (502/504 if a proxy sits in front of it).
 RETRYABLE_STATUSES = frozenset({502, 503, 504})
+# HTTP statuses that mean NiFi doesn't accept the charm's identity.
+AUTH_STATUSES = frozenset({401, 403})
 
 
 class NifiClientError(Exception):
@@ -30,12 +35,59 @@ class NifiConnectionError(NifiClientError):
     """Raised when the NiFi API is not reachable (transient — safe to retry)."""
 
 
-class NifiRestClient:
-    """Thin client for NiFi's /nifi-api/controller/registry-clients endpoints."""
+class NifiAuthError(NifiClientError):
+    """Raised when the TLS check fails or NiFi rejects the charm's identity.
 
-    def __init__(self, base_url: str, timeout: float = 30):
+    Retrying doesn't help: the certificates or NiFi's policies need fixing.
+    """
+
+
+@dataclass(frozen=True)
+class ClientTls:
+    """Files the charm uses to call NiFi over HTTPS.
+
+    Attributes:
+        ca: CA bundle that verifies NiFi's server certificate.
+        cert: The charm's client certificate (with intermediates).
+        key: The private key for `cert`.
+    """
+
+    ca: Path
+    cert: Path
+    key: Path
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Report a redirect as an HTTP error instead of following it.
+
+    NiFi's API doesn't redirect, so a redirect means a misconfiguration.
+    Following one, even https to https, could send the call and the charm's
+    client certificate to another host, or drop TLS.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        logger.warning(
+            "Not following HTTP %s redirect from %s to %s", code, req.full_url, newurl
+        )
+        return None
+
+
+class NifiRestClient:
+    """Thin client for NiFi's /nifi-api/controller/registry-clients endpoints.
+
+    Without `tls`, it calls NiFi over plain HTTP. With `tls`, it verifies NiFi's
+    certificate and presents the charm's client certificate. The files are read
+    on every call, so renewed certificates are used without recreating the client.
+    """
+
+    def __init__(self, base_url: str, timeout: float = 30, tls: ClientTls | None = None):
+        # Without https, urllib never uses the TLS context: the calls would go out
+        # in plain text with no error.
+        if tls is not None and urlsplit(base_url).scheme != "https":
+            raise ValueError(f"A client with TLS files needs an https:// URL, got {base_url}")
         self._api_url = f"{base_url.rstrip('/')}/nifi-api"
         self._timeout = timeout
+        self._tls = tls
 
     def create_or_update_registry_client(
         self,
@@ -87,7 +139,7 @@ class NifiRestClient:
             component_type = "org.apache.nifi.github.GitHubFlowRegistryClient"
             api_url = (
                 "https://api.github.com/"
-                if "github.com" in api_base_url.lower()
+                if parsed.hostname == "github.com"
                 else f"{api_base_url}/api/v1/"
             )
             properties = {
@@ -184,6 +236,8 @@ class NifiRestClient:
         Raises:
             NifiConnectionError: If NiFi can't be reached, times out, answers 502, 503 or 504,
                 or drops the connection mid-reply.
+            NifiAuthError: If the TLS files can't be loaded, the TLS check fails,
+                or NiFi answers 401/403.
             NifiClientError: If NiFi answers with any other error, or invalid JSON.
         """
         url = f"{self._api_url}{path}"
@@ -195,25 +249,28 @@ class NifiRestClient:
         if data is not None:
             request.add_header("Content-Type", "application/json")
 
+        context = self._ssl_context()
+        handlers: list[urllib.request.BaseHandler] = [_NoRedirect()]
+        if context is not None:
+            handlers.append(urllib.request.HTTPSHandler(context=context))
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+            with urllib.request.build_opener(*handlers).open(
+                request, timeout=self._timeout
+            ) as response:
                 payload = response.read()
         except urllib.error.HTTPError as e:
-            # NiFi explains most errors in a plain-text body.
-            detail = e.read().decode(errors="replace").strip()[:500]
-            message = f"HTTP {e.code} from {method} {path}: {detail}"
-            if e.code in RETRYABLE_STATUSES:
-                raise NifiConnectionError(f"NiFi API not reachable: {message}") from e
-            raise NifiClientError(f"{error}: {message}") from e
-        # HTTPException covers a reply cut off mid-body, e.g. NiFi restarting.
-        except (
-            urllib.error.URLError,
-            http.client.HTTPException,
-            TimeoutError,
-            ConnectionError,
-        ) as e:
-            reason = getattr(e, "reason", e)
+            raise _http_error(e, f"{method} {path}", error) from e
+        # A TLS error while connecting arrives wrapped in URLError; one while
+        # reading the reply (TLS 1.3 rejects a client certificate after the
+        # handshake) arrives as is.
+        except (urllib.error.URLError, ssl.SSLError) as e:
+            reason = e.reason if isinstance(e, urllib.error.URLError) else e
+            if _is_tls_failure(reason):
+                raise NifiAuthError(f"{error}: TLS check failed: {reason}") from e
             raise NifiConnectionError(f"NiFi API not reachable: {reason}") from e
+        # HTTPException covers a reply cut off mid-body, e.g. NiFi restarting.
+        except (http.client.HTTPException, TimeoutError, ConnectionError) as e:
+            raise NifiConnectionError(f"NiFi API not reachable: {e}") from e
 
         if not payload:
             return {}
@@ -221,3 +278,52 @@ class NifiRestClient:
             return json.loads(payload)
         except json.JSONDecodeError as e:
             raise NifiClientError(f"{error}: invalid JSON from {method} {path}") from e
+
+    def _ssl_context(self) -> ssl.SSLContext | None:
+        """Build a TLS context from the current files, or None for plain HTTP.
+
+        Raises:
+            NifiAuthError: If the files are missing, unreadable or don't match.
+        """
+        if self._tls is None:
+            return None
+        try:
+            context = ssl.create_default_context(cafile=str(self._tls.ca))
+            context.load_cert_chain(certfile=str(self._tls.cert), keyfile=str(self._tls.key))
+        except (OSError, ssl.SSLError) as e:
+            raise NifiAuthError(f"Cannot load the charm's TLS files: {e}") from e
+        return context
+
+
+def _http_error(e: urllib.error.HTTPError, call: str, error: str) -> NifiClientError:
+    """Turn an HTTP error status from NiFi into the matching client error."""
+    # NiFi explains most errors in a plain-text body. It can be cut short if
+    # NiFi drops the connection, which mustn't hide the status code.
+    try:
+        detail = e.read().decode(errors="replace").strip()[:500]
+    except (OSError, http.client.HTTPException):
+        detail = "<body unreadable>"
+    message = f"HTTP {e.code} from {call}: {detail}"
+    if e.code in RETRYABLE_STATUSES:
+        return NifiConnectionError(f"NiFi API not reachable: {message}")
+    if e.code in AUTH_STATUSES:
+        return NifiAuthError(f"{error}: {message}")
+    return NifiClientError(f"{error}: {message}")
+
+
+def _is_tls_failure(reason: object) -> bool:
+    """Whether an error means the TLS check failed, rather than a dropped connection.
+
+    A connection closed mid-handshake (e.g. NiFi restarting) shows up as an EOF
+    and is worth retrying. Anything else from TLS, such as an unknown CA, a name
+    mismatch or a rejected client certificate, needs the operator.
+
+    Trade-off: with TLS 1.3, a rejected client certificate occasionally arrives
+    as a closed connection instead (an EOF here, or a reset handled as a
+    ConnectionError), so that call is retried (Maintenance) and a later one
+    reports it (Blocked). Treating every EOF as an auth failure would instead
+    block the charm whenever NiFi restarts.
+    """
+    if isinstance(reason, (ssl.SSLEOFError, ssl.SSLZeroReturnError)):
+        return False
+    return isinstance(reason, ssl.SSLError)

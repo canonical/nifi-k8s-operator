@@ -571,6 +571,7 @@ lint = [
 ]
 unit = [
     { name = "coverage" },
+    { name = "cryptography" },
     { name = "ops", extra = ["testing"] },
     { name = "pytest" },
 ]
@@ -597,6 +598,7 @@ lint = [
 ]
 unit = [
     { name = "coverage", extras = ["toml"] },
+    { name = "cryptography" },
     { name = "ops", extras = ["testing"] },
     { name = "pytest" },
 ]

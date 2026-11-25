@@ -9,12 +9,29 @@ import xml.etree.ElementTree as ET
 
 import pytest
 import yaml
+from conftest import java_properties
 
 import constants
 from properties_manager import NifiPropertiesManager
 
 _TEST_KEY = "test-sensitive-key-32-characters!"
 _IDENTITY = "CN=charm.nifi-k8s.test-model.svc.cluster.local"
+_POD_FQDN = "nifi-k8s-0.nifi-k8s-endpoints.test-model.svc.cluster.local"
+_HTTP_SNAPSHOT = pathlib.Path(__file__).parent / "snapshots" / "nifi.properties.http"
+
+# Settings that belong to HTTPS only; none of them may appear in an HTTP render.
+_HTTPS_ONLY_PREFIXES = (
+    "nifi.web.https.",
+    "nifi.security.keystore",
+    "nifi.security.truststore",
+    "nifi.security.key",
+    "nifi.security.autoreload.",
+    "nifi.security.identity.mapping.",
+    "nifi.security.user.",
+    "nifi.authorizer.",
+    "nifi.remote.input.secure",
+)
+
 
 # Juju storage sizes (M/G/T/P/E) and NiFi data sizes (KB/MB/GB/TB) are both binary.
 _SIZE_EXPONENTS = {"K": 1, "M": 2, "G": 3, "T": 4, "P": 5, "E": 6}
@@ -112,6 +129,92 @@ class TestRenderNifiProperties:
             gen.render_nifi_properties(sensitive_props_key=_TEST_KEY)
 
 
+class TestRenderNifiPropertiesHttps:
+    @pytest.fixture()
+    def https(self, generator) -> dict[str, str]:
+        return java_properties(
+            generator.render_nifi_properties(sensitive_props_key=_TEST_KEY, https_host=_POD_FQDN)
+        )
+
+    def test_http_has_no_https_settings(self, generator):
+        """Without an HTTPS host the file is HTTP as before, with nothing extra.
+
+        Any change to the HTTP render restarts NiFi on every existing deployment.
+        """
+        content = generator.render_nifi_properties(sensitive_props_key=_TEST_KEY)
+        assert not [k for k in java_properties(content) if k.startswith(_HTTPS_ONLY_PREFIXES)]
+        assert f"nifi.web.http.port={constants.NIFI_PORT}" in content
+
+    def test_http_render_matches_the_snapshot(self, generator):
+        """The HTTP render must match the snapshot exactly.
+
+        Any change restarts NiFi on every existing deployment at upgrade.
+        The missing final newline is intended (Jinja drops it).
+        """
+        content = generator.render_nifi_properties(sensitive_props_key=_TEST_KEY)
+        assert content == _HTTP_SNAPSHOT.read_text()
+
+    def test_https_listens_on_the_pod_fqdn_only(self, https):
+        assert https["nifi.web.http.host"] == ""
+        assert https["nifi.web.http.port"] == ""
+        assert https["nifi.web.https.host"] == _POD_FQDN
+        assert https["nifi.web.https.port"] == str(constants.NIFI_HTTPS_PORT)
+
+    def test_https_uses_the_pem_files(self, https):
+        assert https["nifi.security.keystoreType"] == "PEM"
+        assert https["nifi.security.keystore.certificate"] == constants.TLS_CERT_PATH
+        assert https["nifi.security.keystore.privateKey"] == constants.TLS_KEY_PATH
+        assert https["nifi.security.truststoreType"] == "PEM"
+        assert https["nifi.security.truststore.certificate"] == constants.TLS_CA_PATH
+        # Keep store paths and passwords empty so NiFi takes the PEM branch.
+        for key in (
+            "nifi.security.keystore",
+            "nifi.security.keystorePasswd",
+            "nifi.security.keyPasswd",
+            "nifi.security.truststore",
+            "nifi.security.truststorePasswd",
+        ):
+            assert https[key] == "", key
+        assert https["nifi.security.autoreload.enabled"] == "true"
+        assert https["nifi.remote.input.secure"] == "true"
+
+    def test_https_uses_the_managed_authorizer(self, https):
+        assert https["nifi.security.user.authorizer"] == "managed-authorizer"
+        assert https["nifi.authorizer.configuration.file"] == constants.AUTHORIZERS_XML_PATH
+        assert https["nifi.security.user.login.identity.provider"] == ""
+        assert https["nifi.security.identity.mapping.transform.dn"] == "NONE"
+        # Anonymous stays on: it has no permissions under the managed authorizer.
+        assert https["nifi.security.allow.anonymous.authentication"] == "true"
+
+    @pytest.mark.parametrize(
+        ("identity", "mapped"),
+        [
+            # NiFi formats certificate names as RFC 1779; the library's ID comes first.
+            (f"OID.2.5.4.45=3f2a9c1b-0000-4000-8000-000000000000, {_IDENTITY}", _IDENTITY),
+            (_IDENTITY, _IDENTITY),
+            ("alice@example.com", "alice@example.com"),
+            ("CN=x, OID.2.5.4.45=#03110000", "CN=x, OID.2.5.4.45=#03110000"),
+            ("OIDx2x5x4x45=#0311, CN=x", "OIDx2x5x4x45=#0311, CN=x"),
+            # Only the ID goes: a subject with more names keeps all of them.
+            ("OID.2.5.4.45=#0311, CN=alice, O=Org", "CN=alice, O=Org"),
+        ],
+        ids=[
+            "random-id",
+            "already-mapped",
+            "email",
+            "id-not-first",
+            "dots-are-literal",
+            "more-names",
+        ],
+    )
+    def test_identity_mapping(self, https, identity, mapped):
+        """The pattern, as NiFi reads it, removes only a leading random ID."""
+        pattern = https["nifi.security.identity.mapping.pattern.dn"]
+        value = https["nifi.security.identity.mapping.value.dn"].replace("$1", r"\1")
+        match = re.match(pattern, identity)
+        assert (match.expand(value) if match else identity) == mapped
+
+
 class TestRenderStateManagementXml:
     def test_contains_local_state_directory(self, generator):
         """Rendered state-management.xml contains the expected local state path."""
@@ -127,7 +230,7 @@ class TestRenderStateManagementXml:
 
 class TestRenderAuthorizersXml:
     def test_identity_is_xml_escaped(self, generator):
-        identity = "CN=a<b&c\"d"
+        identity = 'CN=a<b&c"d'
         root = ET.fromstring(generator.render_authorizers_xml(identity))
         seeds = [p.text for p in root.iter("property") if "Identity" in p.get("name")]
         assert seeds == [identity, identity]

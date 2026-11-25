@@ -5,6 +5,7 @@
 
 import datetime
 import pathlib
+import re
 import shutil
 import stat
 import xml.etree.ElementTree as ET
@@ -24,11 +25,12 @@ from charmlibs.interfaces.tls_certificates import (
     generate_certificate,
     generate_private_key,
 )
-from conftest import _SENSITIVE_KEY_SECRET, make_ingress_relation
+from conftest import _SENSITIVE_KEY_SECRET, java_properties, make_ingress_relation
 from cryptography import x509
 
 import constants
 from charm import NifiK8SOperatorCharm
+from properties_manager import NifiPropertiesManager
 
 MODEL = "test-model"
 APP = "nifi-k8s"
@@ -570,3 +572,48 @@ class TestNifiPropertiesMode:
         restart.assert_not_called()
         assert stat.S_IMODE((conf / "nifi.properties").stat().st_mode) == 0o600
         assert out.unit_status == ops.ActiveStatus()
+
+
+@patch.object(
+    TLSCertificatesRequiresV4,
+    "get_assigned_certificate",
+    _assigned({POD_FQDN, CHARM_IDENTITY_CN}),
+)
+class TestHttpsNotSwitchedOn:
+    def test_issued_certificates_keep_nifi_on_http(self, context, container, client_dir):
+        """The HTTPS settings exist but the charm doesn't use them yet."""
+        out = context.run(context.on.update_status(), _state(container))
+        properties = _workload_file(out, context, constants.NIFI_PROPERTIES_PATH).read_text()
+        assert f"nifi.web.http.port={constants.NIFI_PORT}" in properties
+        assert "nifi.web.https." not in properties
+        check = out.get_container(constants.CONTAINER_NAME).plan.checks[constants.READY_CHECK_NAME]
+        assert check.http == {"url": f"http://localhost:{constants.NIFI_PORT}/nifi/"}
+        assert out.unit_status == ops.ActiveStatus()
+
+    def test_issued_certificate_maps_to_the_seeded_identity(self, context, container, client_dir):
+        """NiFi's name for the charm's real certificate must equal the seeded admin.
+
+        Built like NiFi does: RFC 1779 (RDNs in reverse order, ", " between them),
+        then the mapping from the HTTPS nifi.properties as Java's Properties.load reads it.
+        """
+        with context(context.on.update_status(), _state(container)) as mgr:
+            request = mgr.charm._charm_identity_request()
+            out = mgr.run()
+        subject = x509.load_pem_x509_certificate(_issue(request).certificate.raw.encode()).subject
+        names = {
+            x509.NameOID.COMMON_NAME: "CN",
+            x509.NameOID.X500_UNIQUE_IDENTIFIER: "OID.2.5.4.45",
+        }
+        java_dn = ", ".join(
+            f"{names[a.oid]}={a.value}" for rdn in reversed(subject.rdns) for a in rdn
+        )
+        rendered = NifiPropertiesManager().render_nifi_properties(
+            sensitive_props_key="k" * 32, https_host=POD_FQDN
+        )
+        props = java_properties(rendered)
+        match = re.match(props["nifi.security.identity.mapping.pattern.dn"], java_dn)
+        assert match, java_dn
+        mapped = match.expand(
+            props["nifi.security.identity.mapping.value.dn"].replace("$1", r"\1")
+        )
+        assert mapped == _authorizer_seeds(out, context)["Initial Admin Identity"]

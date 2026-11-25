@@ -372,10 +372,7 @@ class TestErrors:
         with pytest.raises(NifiClientError, match=f"HTTP {status}"):
             client.delete_registry_client("any")
         assert len(nifi.requests) == 1
-        assert (
-            f"Not following HTTP {status} redirect from {nifi.url}/nifi-api/"
-            in caplog.text
-        )
+        assert f"Not following HTTP {status} redirect from {nifi.url}/nifi-api/" in caplog.text
         assert f"to {nifi.url}/elsewhere" in caplog.text
 
     def test_connection_refused_raises_connection_error(self):

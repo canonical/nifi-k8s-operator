@@ -37,6 +37,7 @@ TLS_COMMON_NAME_MAX_LENGTH = 64
 
 NIFI_HTTP_HOST = "0.0.0.0"
 NIFI_PORT = 8080
+NIFI_HTTPS_PORT = 8443
 
 # Juju storage mount paths (defined in charmcraft.yaml). Absolute /var/lib/nifi
 # paths, matching the rock's default repository locations, so the storage mounts

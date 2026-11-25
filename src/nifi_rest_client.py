@@ -66,9 +66,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
-        logger.warning(
-            "Not following HTTP %s redirect from %s to %s", code, req.full_url, newurl
-        )
+        logger.warning("Not following HTTP %s redirect from %s to %s", code, req.full_url, newurl)
         return None
 
 

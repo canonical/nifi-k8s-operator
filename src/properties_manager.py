@@ -19,13 +19,20 @@ class NifiPropertiesManager:
     """Manages NiFi configuration files: renders from templates and reads from workload."""
 
     def __init__(self, templates_dir: str = _TEMPLATES_DIR):
-        self._env = Environment(loader=FileSystemLoader(str(templates_dir)), autoescape=False)
+        self._env = Environment(
+            loader=FileSystemLoader(str(templates_dir)),
+            autoescape=False,
+            # Drop the line break after each {% %} tag, so the HTTP render stays
+            # byte for byte what it was before the HTTPS block existed.
+            trim_blocks=True,
+        )
 
     def render_nifi_properties(
         self,
         sensitive_props_key: str,
         proxy_host: str = "",
         proxy_context_path: str = "",
+        https_host: str = "",
     ) -> str:
         """Render nifi.properties from the Jinja2 template.
 
@@ -35,6 +42,9 @@ class NifiPropertiesManager:
             proxy_host: Value for nifi.web.proxy.host, derived from the ingress URL.
             proxy_context_path: Value for nifi.web.proxy.context.path, derived from
                 the ingress URL. Empty for host-based routing.
+            https_host: The pod FQDN, the name on the server certificate. When
+                set, NiFi serves HTTPS on it only (with the TLS files, identity
+                mapping and managed authorizer); when empty, HTTP as today.
         """
         context = {
             "data_dir": constants.DATA_DIR,
@@ -46,6 +56,12 @@ class NifiPropertiesManager:
             "state_management_xml_path": constants.STATE_MANAGEMENT_XML_PATH,
             "proxy_host": proxy_host,
             "proxy_context_path": proxy_context_path,
+            "https_host": https_host,
+            "https_port": constants.NIFI_HTTPS_PORT,
+            "tls_cert_path": constants.TLS_CERT_PATH,
+            "tls_key_path": constants.TLS_KEY_PATH,
+            "tls_ca_path": constants.TLS_CA_PATH,
+            "authorizers_xml_path": constants.AUTHORIZERS_XML_PATH,
         }
         try:
             return self._env.get_template("nifi.properties.j2").render(**context)

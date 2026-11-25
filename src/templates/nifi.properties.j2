@@ -14,8 +14,43 @@ nifi.flowservice.writedelay.interval=500 ms
 nifi.security.allow.anonymous.authentication=true
 
 # Network
+{% if https_host %}
+# HTTPS only. Anonymous is still allowed above, but the managed authorizer
+# gives it no permissions.
+nifi.web.http.host=
+nifi.web.http.port=
+nifi.web.https.host={{ https_host }}
+nifi.web.https.port={{ https_port }}
+
+# Certificates from PEM files. The store paths must stay empty.
+nifi.security.keystore=
+nifi.security.keystoreType=PEM
+nifi.security.keystorePasswd=
+nifi.security.keyPasswd=
+nifi.security.keystore.certificate={{ tls_cert_path }}
+nifi.security.keystore.privateKey={{ tls_key_path }}
+nifi.security.truststore=
+nifi.security.truststoreType=PEM
+nifi.security.truststorePasswd=
+nifi.security.truststore.certificate={{ tls_ca_path }}
+nifi.security.autoreload.enabled=true
+nifi.security.autoreload.interval=10 secs
+nifi.remote.input.secure=true
+
+# Remove the library's random ID (OID.2.5.4.45) from certificate names, so an
+# identity stays the same across renewals. Other identities are left as they are.
+# Backslashes are doubled: NiFi reads this file with Java's Properties.load.
+nifi.security.identity.mapping.pattern.dn=^OID\\.2\\.5\\.4\\.45=[^,]+, (.*)$
+nifi.security.identity.mapping.value.dn=$1
+nifi.security.identity.mapping.transform.dn=NONE
+
+nifi.security.user.authorizer=managed-authorizer
+nifi.authorizer.configuration.file={{ authorizers_xml_path }}
+nifi.security.user.login.identity.provider=
+{% else %}
 nifi.web.http.host={{ http_host }}
 nifi.web.http.port={{ http_port }}
+{% endif %}
 
 # Reverse proxy. Populated from the `ingress` relation; empty when not related.
 nifi.web.proxy.host={{ proxy_host }}

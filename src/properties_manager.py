@@ -61,6 +61,17 @@ class NifiPropertiesManager:
         except TemplateError as e:
             raise RuntimeError(f"Failed to render state-management.xml: {e}") from e
 
+    def render_authorizers_xml(self, charm_identity: str) -> str:
+        """Render authorizers.xml, seeding `charm_identity` as NiFi's first admin."""
+        try:
+            return self._env.get_template("authorizers.xml.j2").render(
+                charm_identity=charm_identity,
+                users_xml_path=constants.USERS_XML_PATH,
+                authorizations_xml_path=constants.AUTHORIZATIONS_XML_PATH,
+            )
+        except TemplateError as e:
+            raise RuntimeError(f"Failed to render authorizers.xml: {e}") from e
+
     @staticmethod
     def get_nifi_property(container, property_name: str) -> str | None:
         """Read a single property value from the on-disk nifi.properties file.

@@ -7,6 +7,7 @@ import datetime
 import pathlib
 import shutil
 import stat
+import xml.etree.ElementTree as ET
 from unittest.mock import patch
 
 import ops
@@ -447,3 +448,125 @@ class TestIntermediateChain:
         assert cert.rstrip("\n").endswith(str(_INTERMEDIATE))
         assert str(_CA) not in cert
         assert CHARM_IDENTITY_CN in _issue_subject(cert)
+
+
+def _authorizer_seeds(out, context) -> dict[str, str]:
+    """The identities seeded in the written authorizers.xml."""
+    root = ET.fromstring(_workload_file(out, context, constants.AUTHORIZERS_XML_PATH).read_text())
+    return {p.get("name"): p.text for p in root.iter("property") if "Identity" in p.get("name")}
+
+
+@patch.object(TLSCertificatesRequiresV4, "get_assigned_certificate", _assigned(set()))
+class TestAuthorizer:
+    def test_seeded_identity_is_the_charm_certificate_name(self, context, container, client_dir):
+        """The seed must match the identity certificate, or the charm is locked out of NiFi."""
+        out = context.run(context.on.update_status(), _state(container))
+        assert _authorizer_seeds(out, context) == {
+            "Initial User Identity 1": f"CN={CHARM_IDENTITY_CN}",
+            "Initial Admin Identity": f"CN={CHARM_IDENTITY_CN}",
+        }
+
+    def test_short_identity_is_seeded(self, context, container, client_dir):
+        model = ops.testing.Model(name="x" * 32, uuid="3f2a9c1b-0000-4000-8000-000000000000")
+        out = context.run(context.on.update_status(), _state(container, model=model))
+        seeds = _authorizer_seeds(out, context)
+        assert seeds["Initial Admin Identity"] == f"CN=charm.{APP}.3f2a9c1b.svc.cluster.local"
+
+    def test_written_with_the_relation_before_certificates(self, context, container, client_dir):
+        """It must be on disk before NiFi's first HTTPS start, when the seeds are read."""
+        out = context.run(context.on.update_status(), _state(container))
+        assert out.unit_status == ops.WaitingStatus(constants.MSG_TLS_WAITING)
+        assert _workload_file(out, context, constants.AUTHORIZERS_XML_PATH).exists()
+
+    def test_nothing_without_the_relation(self, context, container, client_dir):
+        out = context.run(context.on.update_status(), _state(container, tls_relation=False))
+        assert out.unit_status == ops.ActiveStatus()
+        assert not _workload_file(out, context, constants.AUTHORIZERS_XML_PATH).exists()
+
+    def test_nothing_when_the_name_does_not_fit(self, container, client_dir):
+        app = "nifi-" + "x" * 27  # the identity can't fit (see TestLongNames)
+        context = ops.testing.Context(NifiK8SOperatorCharm, app_name=app)
+        with patch("charm.socket.getfqdn", return_value=f"{app}-0.{app}-endpoints.{MODEL}"):
+            out = context.run(context.on.update_status(), _state(container))
+        assert out.unit_status == ops.BlockedStatus(constants.MSG_TLS_NAME_TOO_LONG)
+        assert not _workload_file(out, context, constants.AUTHORIZERS_XML_PATH).exists()
+
+    def test_nothing_when_only_the_server_name_does_not_fit(self, container, client_dir):
+        app = "nifi-" + "x" * 31  # server name too long; identity fits with model "m"
+        context = ops.testing.Context(NifiK8SOperatorCharm, app_name=app)
+        model = ops.testing.Model(name="m")
+        with patch("charm.socket.getfqdn", return_value=f"{app}-0.{app}-endpoints.m"):
+            with context(context.on.update_status(), _state(container, model=model)) as mgr:
+                assert mgr.charm._server_certificate_request() is None
+                assert mgr.charm._charm_identity_request() is not None
+                out = mgr.run()
+        assert out.unit_status == ops.BlockedStatus(constants.MSG_TLS_NAME_TOO_LONG)
+        assert not _workload_file(out, context, constants.AUTHORIZERS_XML_PATH).exists()
+
+    def test_owner_and_mode(self, context, container, client_dir):
+        with patch.object(ops.Container, "push", autospec=True) as push:
+            context.run(context.on.update_status(), _state(container))
+        pushed = {c.args[1]: c.kwargs for c in push.call_args_list}
+        assert pushed[constants.AUTHORIZERS_XML_PATH]["permissions"] == 0o644
+        assert pushed[constants.AUTHORIZERS_XML_PATH]["user"] == constants.WORKLOAD_USER
+        assert pushed[constants.AUTHORIZERS_XML_PATH]["group"] == constants.WORKLOAD_GROUP
+
+    def test_push_failure_goes_blocked(self, context, container, client_dir):
+        def _push(self, path, *args, **kwargs):
+            if path == constants.AUTHORIZERS_XML_PATH:
+                raise ops.pebble.APIError({}, 500, "error", "push failed")
+
+        with patch.object(ops.Container, "push", autospec=True, side_effect=_push):
+            out = context.run(context.on.update_status(), _state(container))
+        assert out.unit_status == ops.BlockedStatus(constants.MSG_CONFIG_WRITE_FAILED)
+
+    def test_relation_removed_leaves_the_file(self, context, container, client_dir, tmp_path):
+        """NiFi ignores the file over HTTP, and the users it seeded stay on the volume."""
+        out = context.run(context.on.update_status(), _state(container))
+        conf = tmp_path / "conf"
+        shutil.copytree(_workload_file(out, context, f"{constants.NIFI_HOME}/conf"), conf)
+        mounted = ops.testing.Container(
+            name=container.name,
+            can_connect=True,
+            layers=container.layers,
+            check_infos=container.check_infos,
+            mounts={
+                "conf": ops.testing.Mount(location=f"{constants.NIFI_HOME}/conf", source=conf)
+            },
+        )
+        out = context.run(context.on.update_status(), _state(mounted, tls_relation=False))
+        assert out.unit_status == ops.ActiveStatus()
+        assert (conf / "authorizers.xml").exists()
+
+
+class TestNifiPropertiesMode:
+    @pytest.mark.parametrize("tls_relation", [False, True], ids=["http", "certificates"])
+    def test_pushed_0600(self, context, container, client_dir, tls_relation):
+        """It holds the sensitive properties key."""
+        out = context.run(context.on.update_status(), _state(container, tls_relation=tls_relation))
+        mode = _workload_file(out, context, constants.NIFI_PROPERTIES_PATH).stat().st_mode
+        assert stat.S_IMODE(mode) == 0o600
+
+    def test_readable_file_with_same_content_is_fixed_without_restart(
+        self, context, container, tmp_path
+    ):
+        """An upgrade from a 0644 file fixes the mode but doesn't restart NiFi."""
+        out = context.run(context.on.update_status(), _state(container, tls_relation=False))
+        conf = tmp_path / "conf"
+        shutil.copytree(_workload_file(out, context, f"{constants.NIFI_HOME}/conf"), conf)
+        (conf / "nifi.properties").chmod(0o644)
+        running = ops.testing.Container(
+            name=container.name,
+            can_connect=True,
+            layers=out.get_container(container.name).layers,
+            service_statuses={constants.SERVICE_NAME: ops.pebble.ServiceStatus.ACTIVE},
+            check_infos=container.check_infos,
+            mounts={
+                "conf": ops.testing.Mount(location=f"{constants.NIFI_HOME}/conf", source=conf)
+            },
+        )
+        with patch.object(ops.Container, "restart") as restart:
+            out = context.run(context.on.update_status(), _state(running, tls_relation=False))
+        restart.assert_not_called()
+        assert stat.S_IMODE((conf / "nifi.properties").stat().st_mode) == 0o600
+        assert out.unit_status == ops.ActiveStatus()

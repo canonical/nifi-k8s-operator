@@ -16,6 +16,7 @@ WORKLOAD_GROUP = "_daemon_"
 NIFI_HOME = "/opt/nifi"
 NIFI_PROPERTIES_PATH = f"{NIFI_HOME}/conf/nifi.properties"
 STATE_MANAGEMENT_XML_PATH = f"{NIFI_HOME}/conf/state-management.xml"
+AUTHORIZERS_XML_PATH = f"{NIFI_HOME}/conf/authorizers.xml"
 
 # TLS files for NiFi. They're written into the container's own filesystem, not a
 # volume, so a pod restart removes them; reconcile writes them again from the
@@ -43,6 +44,12 @@ NIFI_PORT = 8080
 DATA_DIR = "/var/lib/nifi/data"
 CONTENT_REPO_DIR = "/var/lib/nifi/content_repository"
 PROVENANCE_REPO_DIR = "/var/lib/nifi/provenance_repository"
+
+# NiFi's users and policies, on the nifi-data volume so they survive pod restarts.
+# NiFi seeds the charm identity as first admin only while they're empty, and
+# never resets them.
+USERS_XML_PATH = f"{DATA_DIR}/conf/users.xml"
+AUTHORIZATIONS_XML_PATH = f"{DATA_DIR}/conf/authorizations.xml"
 
 # The rock installs openjdk-21-jre-headless via stage-packages, which does not
 # register the /usr/bin/java alternative, so nifi.sh cannot find Java on PATH.

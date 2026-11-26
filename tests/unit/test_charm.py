@@ -131,6 +131,16 @@ class TestPebbleLayer:
             {"url": f"http://localhost:{constants.NIFI_PORT}/nifi/"},
         )
 
+    def test_https_ready_check_is_tcp_at_the_pod_fqdn(self, context, state):
+        """NiFi listens only on the pod FQDN over HTTPS, and Pebble can't trust a private CA."""
+        pod_fqdn = "nifi-k8s-0.nifi-k8s-endpoints.test-model.svc.cluster.local"
+        with context(context.on.update_status(), state) as mgr:
+            layer = ops.pebble.Layer(mgr.charm._pebble_layer(https_host=pod_fqdn))
+        check = layer.checks[constants.READY_CHECK_NAME]
+        assert check.tcp == {"port": constants.NIFI_HTTPS_PORT, "host": pod_fqdn}
+        assert not check.http
+        assert (check.level, check.threshold) == (ops.pebble.CheckLevel.READY, 3)
+
 
 class TestStorageDirs:
     def test_storage_dirs_created_on_first_boot(self, context, state, container):

@@ -2,6 +2,7 @@
 # See LICENSE file for licensing details.
 
 import json
+import re
 from unittest.mock import patch
 
 import ops
@@ -321,3 +322,16 @@ def _block_http():
     """Prevent real calls to the NiFi API in unit tests; every call returns {}."""
     with patch("nifi_rest_client.NifiRestClient._request", return_value={}):
         yield
+
+
+def java_properties(content: str) -> dict[str, str]:
+    """Read key=value lines the way Java's Properties.load does for nifi.properties.
+
+    enough for the charm's template: a backslash escapes the next character.
+    """
+    values = {}
+    for line in content.splitlines():
+        if line and not line.startswith("#") and "=" in line:
+            key, value = line.split("=", 1)
+            values[key] = re.sub(r"\\(.)", r"\1", value)
+    return values

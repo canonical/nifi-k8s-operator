@@ -682,9 +682,21 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         except ops.ModelError:
             return False
 
-    @property
-    def _pebble_layer(self) -> ops.pebble.LayerDict:
-        """Define the Pebble layer for the NiFi workload."""
+    def _pebble_layer(self, https_host: str = "") -> ops.pebble.LayerDict:
+        """Define the Pebble layer for the NiFi workload.
+
+        Args:
+            https_host: The pod FQDN when NiFi serves HTTPS. The ready check is
+                then TCP on the HTTPS port at that name, since NiFi listens only
+                there and Pebble's HTTP check can't trust a private CA. Empty for
+                HTTP, checked over HTTP on localhost as before.
+        """
+        if https_host:
+            ready_check: ops.pebble.CheckDict = {
+                "tcp": {"port": constants.NIFI_HTTPS_PORT, "host": https_host}
+            }
+        else:
+            ready_check = {"http": {"url": f"http://localhost:{constants.NIFI_PORT}/nifi/"}}
         return {
             "services": {
                 constants.SERVICE_NAME: {
@@ -716,7 +728,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
                     "level": "ready",
                     "startup": "enabled",
                     "threshold": 3,
-                    "http": {"url": f"http://localhost:{constants.NIFI_PORT}/nifi/"},
+                    **ready_check,
                 }
             },
         }
@@ -734,7 +746,7 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         Raises:
             ExitWithStatusError: If replanning or restarting fails.
         """
-        self._container.add_layer(constants.SERVICE_NAME, self._pebble_layer, combine=True)
+        self._container.add_layer(constants.SERVICE_NAME, self._pebble_layer(), combine=True)
         try:
             if restart:
                 self._container.restart(constants.SERVICE_NAME)

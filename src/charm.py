@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 import charms.git_integrator.v0.git as git
 import ops
 from charmlibs.interfaces.tls_certificates import (
+    Certificate,
     CertificateRequestAttributes,
     Mode,
     PrivateKey,
@@ -21,6 +22,8 @@ from charmlibs.interfaces.tls_certificates import (
     TLSCertificatesRequiresV4,
 )
 from charms.traefik_k8s.v2.ingress import IngressPerAppRequirer
+from cryptography import x509
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 import constants
 from nifi_rest_client import (
@@ -32,6 +35,38 @@ from nifi_rest_client import (
 from properties_manager import NifiPropertiesManager
 
 logger = logging.getLogger(__name__)
+
+
+def _allows_client_auth(certificate: Certificate) -> bool:
+    """Whether the certificate may be used as a TLS client.
+
+    A certificate without an extended key usage list, or with anyExtendedKeyUsage
+    in it, may be used for anything.
+    """
+    cert = x509.load_pem_x509_certificate(str(certificate).encode())
+    try:
+        usages = cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
+    except x509.ExtensionNotFound:
+        return True
+    return bool(
+        {ExtendedKeyUsageOID.CLIENT_AUTH, ExtendedKeyUsageOID.ANY_EXTENDED_KEY_USAGE} & set(usages)
+    )
+
+
+def _subject_is_common_name(certificate: Certificate, common_name: str) -> bool:
+    """Whether the subject is just `CN=<common_name>`, plus the library's random ID.
+
+    The library puts the random ID (2.5.4.45) last. NiFi prints the subject in
+    reverse, so the ID comes first, and the identity mapping removes it. Any
+    other name a provider adds would stay in NiFi's view of the identity.
+    """
+    cert = x509.load_pem_x509_certificate(str(certificate).encode())
+    rdns = [list(rdn) for rdn in cert.subject.rdns]
+    if rdns and [a.oid for a in rdns[-1]] == [NameOID.X500_UNIQUE_IDENTIFIER]:
+        rdns.pop()
+    return [[(a.oid, a.value) for a in rdn] for rdn in rdns] == [
+        [(NameOID.COMMON_NAME, common_name)]
+    ]
 
 
 class ExitWithStatusError(Exception):
@@ -62,12 +97,12 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             callback=self._reconcile,
         )
 
-        # Set before the ingress requirer is built:
-        self.unit.set_ports(constants.NIFI_PORT)
+        # No port here: given one, the library publishes it on every relation
+        # event. Reconcile publishes the port and scheme instead, so they can
+        # follow a switch to HTTPS.
         self.ingress = IngressPerAppRequirer(
             self,
             relation_name=constants.INGRESS_RELATION,
-            port=constants.NIFI_PORT,
             strip_prefix=True,
         )
 
@@ -88,6 +123,13 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             self.on.update_status,
             self.on.secret_changed,
             self.on[constants.GIT_REGISTRY_RELATION].relation_broken,
+            # Reconcile publishes the ingress requirements, on the events the
+            # library would publish them on.
+            self.on.leader_elected,
+            self.on.upgrade_charm,
+            # Also needed before the provider sends a URL. When it does, reconcile
+            # runs again from `ingress.on.ready`, with the same result.
+            self.on[constants.INGRESS_RELATION].relation_changed,
             self.ingress.on.ready,
             self.ingress.on.revoked,
             self.certificates.on.certificate_available,
@@ -173,6 +215,15 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         """If a git-registry relation exists but is not yet ready, raise."""
         if self.git_registry.relations and not self.git_registry.is_ready():
             raise ExitWithStatusError(constants.MSG_GIT_REGISTRY_NOT_READY, ops.WaitingStatus)
+
+    def _open_port_and_publish_ingress(self) -> None:
+        """Open NiFi's web port and send it, with the scheme, to the ingress provider.
+
+        The port is opened first: the library tells the provider whether it is open.
+        Only the leader writes the port and scheme; every unit writes its address.
+        """
+        self.unit.set_ports(constants.NIFI_PORT)
+        self.ingress.provide_ingress_requirements(scheme="http", port=constants.NIFI_PORT)
 
     def _check_ingress(self) -> None:
         """If an ingress relation exists but no URL has been published yet, raise.
@@ -419,6 +470,28 @@ class NifiK8SOperatorCharm(ops.CharmBase):
             and marker.read_text() == str(relation.id)
         )
 
+    @staticmethod
+    def _check_issued_certificates(
+        server_cert: ProviderCertificate | None,
+        identity_cert: ProviderCertificate | None,
+        identity_request: CertificateRequestAttributes,
+    ) -> None:
+        """Check that NiFi will accept the issued certificates, before writing them.
+
+        Raises:
+            ExitWithStatusError(BlockedStatus): If a certificate's extended key usage
+                leaves out client authentication (NiFi rejects it as a client), or the
+                provider changed the charm certificate's subject (NiFi would see a
+                different name from the seeded admin, and refuse every API call).
+        """
+        for issued in (server_cert, identity_cert):
+            if issued and not _allows_client_auth(issued.certificate):
+                raise ExitWithStatusError(constants.MSG_TLS_NO_CLIENT_AUTH, ops.BlockedStatus)
+        if identity_cert and not _subject_is_common_name(
+            identity_cert.certificate, identity_request.common_name
+        ):
+            raise ExitWithStatusError(constants.MSG_TLS_SUBJECT_CHANGED, ops.BlockedStatus)
+
     def _reconcile_tls(self) -> None:
         """Write the certificates from the `certificates` relation, once issued.
 
@@ -429,7 +502,8 @@ class NifiK8SOperatorCharm(ops.CharmBase):
 
         Raises:
             ExitWithStatusError(BlockedStatus): If the names can't fit a certificate,
-                or the provider denied a request.
+                the provider denied a request, or an issued certificate fails
+                `_check_issued_certificates`.
             ExitWithStatusError(WaitingStatus): Until this relation's certificates are
                 first written.
         """
@@ -449,9 +523,11 @@ class NifiK8SOperatorCharm(ops.CharmBase):
                 )
 
         server_cert, server_key = self.certificates.get_assigned_certificate(server_request)
+        identity_cert, identity_key = self.certificates.get_assigned_certificate(identity_request)
+        self._check_issued_certificates(server_cert, identity_cert, identity_request)
+
         if server_cert and server_key:
             self._write_server_tls_files(server_cert, server_key)
-        identity_cert, identity_key = self.certificates.get_assigned_certificate(identity_request)
         if identity_cert and identity_key:
             self._write_client_tls_files(identity_cert, identity_key)
         if server_cert and identity_cert:
@@ -770,21 +846,24 @@ class NifiK8SOperatorCharm(ops.CharmBase):
         All events funnel through here. The reconcile inspects the current
         world state and converges to the correct unit status:
 
-        1. Verify container connectivity.
-        2. If secret-changed for our key, rotate the key via nifi.sh.
-        3. Check git-registry and ingress relation readiness.
-        4. Ensure storage directories exist.
-        5. Render and push authorizers.xml (with the certificates relation),
+        1. Open the web port and publish the ingress requirements. These don't
+           need the workload, so a stopped NiFi doesn't hold back ingress.
+        2. Verify container connectivity.
+        3. If secret-changed for our key, rotate the key via nifi.sh.
+        4. Check git-registry and ingress relation readiness.
+        5. Ensure storage directories exist.
+        6. Render and push authorizers.xml (with the certificates relation),
            nifi.properties and state-management.xml.
-        6. Apply pebble layer and (re)start the service as needed.
-        7. Wait for NiFi to become ready.
-        8. Configure or clean up the flow registry client via REST API.
-        9. Write TLS certificates, once issued. This runs last because NiFi
+        7. Apply pebble layer and (re)start the service as needed.
+        8. Wait for NiFi to become ready.
+        9. Configure or clean up the flow registry client via REST API.
+        10. Check and write TLS certificates, once issued. This runs last because NiFi
            doesn't use them yet, so a pending certificate must not hold back
            the HTTP setup above. As a result, the files are written only once
            NiFi is ready.
         """
         try:
+            self._open_port_and_publish_ingress()
             self._check_pebble_connection()
             new_key = self._rotate_sensitive_key(event)
             self._check_git_registry()

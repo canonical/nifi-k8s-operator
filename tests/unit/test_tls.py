@@ -15,6 +15,7 @@ import ops
 import ops.testing
 import pytest
 from charmlibs.interfaces.tls_certificates import (
+    Certificate,
     CertificateError,
     CertificateRequestAttributes,
     ProviderCertificate,
@@ -27,6 +28,7 @@ from charmlibs.interfaces.tls_certificates import (
 )
 from conftest import _SENSITIVE_KEY_SECRET, java_properties, make_ingress_relation
 from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
 
 import constants
 from charm import NifiK8SOperatorCharm
@@ -617,3 +619,127 @@ class TestHttpsNotSwitchedOn:
             props["nifi.security.identity.mapping.value.dn"].replace("$1", r"\1")
         )
         assert mapped == _authorizer_seeds(out, context)["Initial Admin Identity"]
+
+
+def _issue_custom(
+    request: CertificateRequestAttributes,
+    *,
+    usages: list[x509.ObjectIdentifier] | None = None,
+    extra_names: tuple[x509.NameAttribute, ...] = (),
+    keep_unique_id: bool = True,
+    unique_id_at: str = "last",
+) -> ProviderCertificate:
+    """Sign a request the way a misbehaving CA might: limited key usage or a changed subject.
+
+    `unique_id_at` places the library's random ID: "last" (as the library does),
+    "first", "with-cn" (in the same RDN as the common name), or "last-with-org"
+    (last, in the same RDN as an organisation name).
+    """
+    csr = request.generate_csr(_UNIT_KEY)
+    csr_obj = x509.load_pem_x509_csr(csr.raw.encode())
+    cn = x509.NameAttribute(x509.NameOID.COMMON_NAME, request.common_name)
+    uid = csr_obj.subject.get_attributes_for_oid(x509.NameOID.X500_UNIQUE_IDENTIFIER)
+    rdns = [x509.RelativeDistinguishedName([cn])]
+    rdns += [x509.RelativeDistinguishedName([name]) for name in extra_names]
+    if keep_unique_id and unique_id_at == "last":
+        rdns.append(x509.RelativeDistinguishedName(uid))
+    elif keep_unique_id and unique_id_at == "first":
+        rdns.insert(0, x509.RelativeDistinguishedName(uid))
+    elif keep_unique_id and unique_id_at == "with-cn":
+        rdns[0] = x509.RelativeDistinguishedName([cn, *uid])
+    elif keep_unique_id and unique_id_at == "last-with-org":
+        org = x509.NameAttribute(x509.NameOID.ORGANIZATION_NAME, "Org")
+        rdns.append(x509.RelativeDistinguishedName([*uid, org]))
+    ca = x509.load_pem_x509_certificate(_CA.raw.encode())
+    now = datetime.datetime.now(datetime.timezone.utc)
+    builder = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name(rdns))
+        .issuer_name(ca.subject)
+        .public_key(csr_obj.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + datetime.timedelta(days=1))
+    )
+    if usages is not None:
+        builder = builder.add_extension(x509.ExtendedKeyUsage(usages), critical=False)
+    ca_key = serialization.load_pem_private_key(_CA_KEY.raw.encode(), password=None)
+    cert = builder.sign(ca_key, hashes.SHA256())  # type: ignore[arg-type]
+    issued = Certificate.from_string(cert.public_bytes(serialization.Encoding.PEM).decode())
+    return ProviderCertificate(
+        relation_id=1,
+        certificate=issued,
+        certificate_signing_request=csr,
+        ca=_CA,
+        chain=[issued, _CA],
+    )
+
+
+def _assigned_custom(*, server=None, identity=None):
+    """Issue both requests; `server`/`identity` are _issue_custom kwargs for that one."""
+
+    def _get(_self, request):
+        custom = server if request.common_name == POD_FQDN else identity
+        if custom is None:
+            return _issue(request), _UNIT_KEY
+        return _issue_custom(request, **custom), _UNIT_KEY
+
+    return _get
+
+
+_SERVER_AUTH = x509.ExtendedKeyUsageOID.SERVER_AUTH
+_CLIENT_AUTH = x509.ExtendedKeyUsageOID.CLIENT_AUTH
+_ANY_USAGE = x509.ExtendedKeyUsageOID.ANY_EXTENDED_KEY_USAGE
+
+
+class TestIssuedCertificateChecks:
+    """A certificate NiFi would reject blocks the unit before anything is written."""
+
+    def _run(self, context, container, **custom):
+        with patch.object(
+            TLSCertificatesRequiresV4, "get_assigned_certificate", _assigned_custom(**custom)
+        ):
+            return context.run(context.on.update_status(), _state(container))
+
+    @pytest.mark.parametrize("which", ["server", "identity"])
+    def test_no_client_auth_goes_blocked(self, context, container, client_dir, which):
+        out = self._run(context, container, **{which: {"usages": [_SERVER_AUTH]}})
+        assert out.unit_status == ops.BlockedStatus(constants.MSG_TLS_NO_CLIENT_AUTH)
+        assert not _workload_file(out, context, constants.TLS_CERT_PATH).exists()
+        assert not client_dir.exists()
+
+    @pytest.mark.parametrize(
+        "usages",
+        [[_SERVER_AUTH, _CLIENT_AUTH], [_CLIENT_AUTH], [_ANY_USAGE], None],
+        ids=["both", "client", "any", "none"],
+    )
+    def test_client_auth_allowed_is_active(self, context, container, client_dir, usages):
+        """No extended key usage list, or anyExtendedKeyUsage, allows any usage."""
+        out = self._run(context, container, server={"usages": usages}, identity={"usages": usages})
+        assert out.unit_status == ops.ActiveStatus()
+
+    def test_extra_name_in_identity_subject_goes_blocked(self, context, container, client_dir):
+        """NiFi would see `CN=charm..., O=Org`, not the seeded admin, and refuse every call."""
+        org = x509.NameAttribute(x509.NameOID.ORGANIZATION_NAME, "Org")
+        out = self._run(context, container, identity={"extra_names": (org,)})
+        assert out.unit_status == ops.BlockedStatus(constants.MSG_TLS_SUBJECT_CHANGED)
+        assert not client_dir.exists()
+
+    @pytest.mark.parametrize("unique_id_at", ["first", "with-cn", "last-with-org"])
+    def test_random_id_where_nifi_does_not_remove_it_goes_blocked(
+        self, context, container, client_dir, unique_id_at
+    ):
+        """NiFi's mapping removes the ID only when it's printed first, i.e. stored last."""
+        out = self._run(context, container, identity={"unique_id_at": unique_id_at})
+        assert out.unit_status == ops.BlockedStatus(constants.MSG_TLS_SUBJECT_CHANGED)
+
+    def test_identity_without_the_random_id_is_accepted(self, context, container, client_dir):
+        """`CN=charm...` alone maps to itself, so it still equals the seed."""
+        out = self._run(context, container, identity={"keep_unique_id": False})
+        assert out.unit_status == ops.ActiveStatus()
+
+    def test_extra_name_in_server_subject_is_accepted(self, context, container, client_dir):
+        """Only the charm's identity is compared with a seed."""
+        org = x509.NameAttribute(x509.NameOID.ORGANIZATION_NAME, "Org")
+        out = self._run(context, container, server={"extra_names": (org,)})
+        assert out.unit_status == ops.ActiveStatus()

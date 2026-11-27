@@ -84,6 +84,10 @@ MSG_CONFIG_WRITE_FAILED = "Failed to write NiFi configuration"
 MSG_TLS_WAITING = "Waiting for TLS certificates"
 MSG_TLS_DENIED = "TLS certificate request denied: {reason}"
 MSG_TLS_WRITE_FAILED = "Failed to write TLS certificate files"
+MSG_TLS_NO_CLIENT_AUTH = "TLS certificate does not allow client authentication"
+MSG_TLS_SUBJECT_CHANGED = (
+    "TLS provider changed the charm certificate's subject; use a provider that keeps it"
+)
 MSG_TLS_NAME_TOO_LONG = (
     "Application name too long for a TLS certificate; redeploy with a shorter name"
 )

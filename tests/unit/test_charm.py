@@ -4,6 +4,7 @@
 """Unit tests for the NiFi K8s charm."""
 
 import dataclasses
+import json
 import pathlib
 import tempfile
 from unittest.mock import patch
@@ -770,9 +771,47 @@ class TestIngressRelation:
         state_after = context.run(context.on.pebble_ready(container), state)
         assert "nifi.web.proxy.host=10.0.0.1:80\n" in self._properties(context, state_after)
 
+        relation = state_after.get_relation(relation.id)
         state_out = context.run(context.on.relation_broken(relation), state_after)
 
         content = self._properties(context, state_out)
         assert "nifi.web.proxy.host=\n" in content
         assert "nifi.web.proxy.context.path=\n" in content
         assert state_out.unit_status == ops.ActiveStatus()
+
+
+class TestIngressRequirements:
+    """The charm, not the ingress library, sends NiFi's port and scheme."""
+
+    @staticmethod
+    def _run(context, container, event, *, leader=True):
+        relation = make_ingress_relation()
+        state = dataclasses.replace(
+            _state_with_secret_and_relations(container, [relation]), leader=leader
+        )
+        out = context.run(getattr(context.on, event)(**_event_args(event, relation)), state)
+        return out, out.get_relation(relation.id)
+
+    @pytest.mark.parametrize("event", ["relation_changed", "leader_elected", "upgrade_charm"])
+    def test_leader_sends_http_port_and_opens_it(self, context, container, event):
+        out, relation = self._run(context, container, event)
+        assert json.loads(relation.local_app_data["port"]) == constants.NIFI_PORT
+        assert json.loads(relation.local_app_data.get("scheme", '"http"')) == "http"
+        assert json.loads(relation.local_app_data["is_port_open"]) is True
+        assert out.opened_ports == {ops.testing.TCPPort(constants.NIFI_PORT)}
+
+    def test_non_leader_sends_only_its_address(self, context, container):
+        _, relation = self._run(context, container, "relation_changed", leader=False)
+        assert "port" not in relation.local_app_data
+        assert "host" in relation.local_unit_data
+
+    def test_sent_while_the_workload_is_unreachable(self, context, container):
+        """Ingress doesn't wait for NiFi: the port and scheme don't depend on it."""
+        offline = dataclasses.replace(container, can_connect=False)
+        out, relation = self._run(context, offline, "relation_changed")
+        assert out.unit_status == ops.MaintenanceStatus(constants.MSG_PEBBLE_NOT_READY)
+        assert json.loads(relation.local_app_data["port"]) == constants.NIFI_PORT
+
+
+def _event_args(event: str, relation: ops.testing.Relation) -> dict:
+    return {"relation": relation, "remote_unit": 0} if event == "relation_changed" else {}
